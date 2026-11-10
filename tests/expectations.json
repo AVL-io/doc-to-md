@@ -1,0 +1,35 @@
+{
+  "synthetic-report.docx": {
+    "verdict": "complete",
+    "contains": {
+      "html": ["<td rowspan=\"2\">PM10</td>", "<td rowspan=\"2\">200</td>", "<td colspan=\"3\">Section A: General comments</td>"],
+      "flatten": ["| PM10 | AQ-02 | 61.7 | 150 |", "| Section A: General comments | Section A: General comments | Section A: General comments |"],
+      "any": ["# 1 Introduction", "## 1.1 Scope", "- Air quality monitoring", "1. Baseline survey", "**critical receptor**", "1,250.75"]
+    },
+    "notContains": ["TEST REPORT HEADER", "Footer text 2026"]
+  },
+  "synthetic-report.pdf": {
+    "verdict": "complete",
+    "contains": {
+      "html": ["<td rowspan=\"2\">PM10</td>", "<td rowspan=\"2\">200</td>", "<td colspan=\"3\">Section A: General comments</td>"],
+      "any": ["# 1 Introduction", "- Air quality monitoring", "1. Baseline survey", "<!-- Page 2 -->"]
+    },
+    "notContains": ["TEST REPORT HEADER", "Footer text 2026"]
+  },
+  "synthetic-report-untagged.pdf": {
+    "verdict": "complete",
+    "contains": {
+      "html": ["<td rowspan=\"2\">PM10</td>", "<td rowspan=\"2\">200</td>", "<td colspan=\"3\">Section A: General comments</td>"],
+      "any": ["# 1 Introduction", "- Air quality monitoring", "1. Baseline survey"]
+    },
+    "notContains": ["TEST REPORT HEADER", "Footer text 2026"]
+  },
+  "synthetic-monitoring.xlsx": {
+    "verdict": "complete",
+    "contains": {
+      "html": ["<td colspan=\"5\">Ambient Noise Monitoring Results</td>", "<td rowspan=\"2\">N-01</td>"],
+      "any": ["## Sheet: Monitoring", "## Sheet: Water Quality", "55.5", "2026-03-14", "12.5%", "1,234,567.89"]
+    },
+    "notContains": ["Secret calibration factor", "Hidden row value", "Hidden data"]
+  }
+}

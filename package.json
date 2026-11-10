@@ -1,0 +1,20 @@
+{
+  "name": "doc-to-md",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-based, offline-capable converter between Word/Excel/PDF and Markdown. All processing happens locally in the browser.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node tools/serve.mjs dist 8080",
+    "test": "node build.mjs && node tests/run-tests.mjs"
+  },
+  "devDependencies": {
+    "docx": "9.5.1",
+    "esbuild": "0.25.10",
+    "jszip": "3.10.1",
+    "marked": "15.0.12",
+    "pdfjs-dist": "4.10.38",
+    "pdfmake": "0.2.20"
+  }
+}

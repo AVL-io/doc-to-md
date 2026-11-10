@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Convert Word, Excel and PDF documents to Markdown (and back) entirely in your browser. Files never leave your computer.">
+<meta name="theme-color" content="#1f4e79">
+<title>Doc to Markdown</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="icons/icon.svg" alt="" width="36" height="36">
+    <div>
+      <h1>Doc to Markdown</h1>
+      <p class="tagline">Word · Excel · PDF ⇄ Markdown</p>
+    </div>
+  </div>
+  <div class="top-actions">
+    <span class="badge privacy" title="All processing happens inside this browser window. A Content Security Policy blocks the page from sending data anywhere.">🔒 Files never leave this computer</span>
+    <span class="badge" id="offline-status" hidden></span>
+    <button class="btn ghost" id="install-btn" hidden>Install app</button>
+  </div>
+</header>
+
+<div class="banner" id="update-banner" hidden>
+  A new version of the app is available. <button class="btn small" id="update-btn">Update now</button>
+</div>
+
+<main>
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="tab-to" aria-selected="true" aria-controls="panel">Document → Markdown</button>
+    <button role="tab" id="tab-from" aria-selected="false" aria-controls="panel">Markdown → Document</button>
+  </nav>
+
+  <section id="panel" role="tabpanel">
+    <label class="dropzone" id="dropzone" tabindex="0">
+      <input type="file" id="file-input" multiple hidden>
+      <span class="dz-icon" aria-hidden="true">⇪</span>
+      <span class="dz-title" id="dz-title">Drag and drop files here</span>
+      <span class="dz-sub" id="dz-sub">or click to choose · .pdf, .docx, .xlsx</span>
+    </label>
+
+    <ul class="file-list" id="file-list"></ul>
+
+    <div class="formats" id="formats" hidden>
+      <span class="formats-label">Create:</span>
+      <label><input type="checkbox" name="fmt" value="docx" checked> Word (.docx)</label>
+      <label><input type="checkbox" name="fmt" value="xlsx"> Excel (.xlsx)</label>
+      <label><input type="checkbox" name="fmt" value="pdf"> PDF (.pdf)</label>
+      <label><input type="checkbox" name="fmt" value="html"> Web page (.html)</label>
+    </div>
+
+    <div class="cta-row">
+      <button class="btn primary big" id="convert-btn" disabled>Convert</button>
+      <button class="btn ghost" id="clear-btn" hidden>Clear list</button>
+    </div>
+
+    <div class="progress" id="progress" hidden>
+      <div class="bar"><span id="progress-bar"></span></div>
+      <p id="progress-text"></p>
+    </div>
+
+    <section class="results" id="results" hidden>
+      <div class="results-head">
+        <h2>Results</h2>
+        <button class="btn" id="zip-btn">Download all (.zip)</button>
+      </div>
+      <ul id="result-list"></ul>
+    </section>
+  </section>
+</main>
+
+<footer>
+  <p>Processing is local: documents are read and converted by this page inside your browser and are never uploaded. After the first visit the app also works offline.</p>
+  <p><span id="offline-link-wrap"><a href="doc-to-md-offline.html" download id="offline-link">Download the single-file offline version</a> · </span><span id="version"></span></p>
+</footer>
+
+<!-- Pre-conversion options -->
+<dialog id="options-dialog">
+  <form method="dialog" id="options-form">
+    <h2>Conversion options</h2>
+    <p class="muted">Choose what to remove before conversion. Removed items are listed in each verification report.</p>
+
+    <fieldset>
+      <legend>Remove before conversion</legend>
+      <label><input type="checkbox" name="removeImages"> Images and charts</label>
+      <label><input type="checkbox" name="removeHeadersFooters"> Headers and footers</label>
+      <label><input type="checkbox" name="removePageNumbers"> Page numbers</label>
+      <label><input type="checkbox" name="removeToc"> Table of contents / lists of tables and figures</label>
+      <label><input type="checkbox" name="removeFootnotes"> Footnotes and endnotes</label>
+      <label><input type="checkbox" name="removeComments"> Comments</label>
+      <label data-only="docx"><input type="checkbox" name="removeCover"> Cover page (Word documents with a built-in cover page)</label>
+      <label data-only="docx"><input type="checkbox" name="acceptChanges"> Accept tracked changes (output final text only)</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Tables</legend>
+      <label><input type="radio" name="tableMode" value="html"> HTML tables for merged cells <span class="muted">(recommended: keeps row and column spans exactly)</span></label>
+      <label><input type="radio" name="tableMode" value="flatten"> Pure Markdown tables <span class="muted">(merged values are repeated in each cell)</span></label>
+    </fieldset>
+
+    <fieldset data-only="xlsx">
+      <legend>Excel</legend>
+      <label><input type="checkbox" name="includeHiddenSheets"> Include hidden sheets</label>
+      <label><input type="checkbox" name="includeHiddenRowsCols"> Include hidden rows and columns</label>
+    </fieldset>
+
+    <fieldset data-only="pdf">
+      <legend>PDF</legend>
+      <label><input type="checkbox" name="pageMarkers"> Insert page markers (<code>&lt;!-- Page 5 --&gt;</code>) for traceability</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Downloads</legend>
+      <label><input type="checkbox" name="autoDownload"> Download each .md file automatically when ready</label>
+      <label><input type="checkbox" name="downloadReports"> Also download the verification report for each file</label>
+    </fieldset>
+
+    <div class="dialog-actions">
+      <button class="btn ghost" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="proceed-btn">Proceed with conversion</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Review / report viewer -->
+<dialog id="viewer" class="viewer">
+  <div class="viewer-head">
+    <h2 id="viewer-title"></h2>
+    <nav class="tabs small" id="viewer-tabs"></nav>
+    <button class="btn ghost" id="viewer-close" aria-label="Close">✕</button>
+  </div>
+  <div class="viewer-body" id="viewer-body"></div>
+</dialog>
+</body>
+</html>
