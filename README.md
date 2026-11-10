@@ -75,8 +75,21 @@ recommended* or *Incomplete*.
 5. **Duplication check.** Words that occur more often in the output than in the
    source are flagged.
 
-For PDFs, a **side-by-side review** shows each original page next to its
+**Items to review.** The top of each report lists only the items that need
+attention, with colour coding: 🔴 missing or mismatched, 🟠 check
+recommended (for example, a table rebuilt without border lines), 🟢 OK. The
+same symbols are used throughout the downloaded report, so they remain visible
+in any text editor or AI tool. Inside the app, the checklist provides:
+- a **Show** button that opens the side-by-side review at the item;
+- a **Reviewed** tick box (ticks are saved in the browser only);
+- a filter that hides items already reviewed.
+
+**Side-by-side review (PDF).** Each original page is shown next to its
 converted output.
+- Flagged tables are outlined in amber on the page and in the output.
+- Text missing from the output is outlined in red on the page.
+- The item selected from the checklist is outlined in blue.
+- **Flagged page** buttons jump between pages that contain flagged items.
 
 **Limitation.** The text check proves that every value is *present* in the
 output. For PDFs, it cannot prove that every value sits in the *correct table
@@ -93,7 +106,9 @@ Then:
 2. Click **Convert to Markdown**.
 3. Confirm the options.
 
-The `.md` files are downloaded automatically.
+The `.md` files are downloaded automatically. Each tab (Document → Markdown,
+Markdown → Document) keeps its own results list. **Clear results** empties that
+list; files already downloaded are not affected.
 
 ### Installing as an app (PWA)
 1. Open the address in Microsoft Edge or Google Chrome.

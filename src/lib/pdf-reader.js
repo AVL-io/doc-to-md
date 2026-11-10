@@ -81,7 +81,27 @@ export async function readPdf(buf, options = {}, onProgress = () => {}) {
   }
 
   const doc = { blocks: postProcess(blocks, opts, log, exclude), footnotes: [] };
-  return { doc, log, pages: pages.map(p => ({ num: p.num, rawText: p.rawText, width: p.width, height: p.height })) };
+
+  // register of tables (position on the page and in the output) for the review checklist
+  log.tables = [];
+  const perPage = new Map();
+  let docIndex = 0;
+  for (const b of doc.blocks) {
+    if (b.type !== 'table' || !b.meta) continue;
+    docIndex++;
+    const m = b.meta;
+    const indexOnPage = (perPage.get(m.page) || 0) + 1;
+    perPage.set(m.page, indexOnPage);
+    const box = (x) => ({ page: x.page, x0: x.x0, x1: x.x1, top: x.top, bottom: x.bottom });
+    log.tables.push({
+      docIndex, indexOnPage, page: m.page,
+      rows: b.rows.length, cols: m.nCols,
+      merged: b.rows.reduce((s, r) => s + r.filter(c => (c.rowspan || 1) > 1 || (c.colspan || 1) > 1).length, 0),
+      inferred: !!m.inferred, lowConfidence: !!m.lowConfidence,
+      boxes: [box(m), ...(m.parts || []).map(box)],
+    });
+  }
+  return { doc, log, pages: pages.map(p => ({ num: p.num, rawText: p.rawText, items: p.items, width: p.width, height: p.height })) };
 }
 
 // ======================================================================
@@ -134,6 +154,7 @@ async function extractPage(page, num, log) {
   const frags = [];
   const mcStack = [];
   let rawText = '';
+  const items = [];   // positions of every text item (used to highlight text during review)
   let figures = [];
   for (const it of tc.items) {
     if (it.type === 'beginMarkedContent' || it.type === 'beginMarkedContentProps') {
@@ -162,6 +183,7 @@ async function extractPage(page, num, log) {
       if (frags.length && !frags[frags.length - 1].figure) frags[frags.length - 1].spaceAfter = true;
       continue;
     }
+    items.push({ s: it.str, x, y, w: it.width, h: size });
     const fs = fontStyle(it.fontName);
     frags.push({
       str: it.str.replace(/[\uE000-\uF8FF]/g, ch => PUA_BULLETS[ch] ?? '\u2022'),
@@ -186,7 +208,7 @@ async function extractPage(page, num, log) {
   // ---- lines (non-table text) ----
   const lines = buildLines(frags.filter(f => f.figure || f.tableId == null));
 
-  return { num, width, height, lines, tables, tagged, rawText, hasText: frags.some(f => !f.figure) };
+  return { num, width, height, lines, tables, tagged, rawText, items, hasText: frags.some(f => !f.figure) };
 }
 
 const PUA_BULLETS = { '\uF0B7': '•', '\uF0A7': '▪', '\uF0D8': '➢', '\uF076': '❖', '\uF0FC': '✓', '\uF06E': '■', '\uF0A8': '□', '\uF0E0': '→' };
@@ -465,7 +487,7 @@ function detectTables(rules, frags, pageNum, log) {
     if (lowConfidence) log.stats.lowConfidenceTables.push(pageNum);
     tables.push({
       order: firstOrder,
-      block: { type: 'table', rows: tableRows, meta: { page: pageNum, xs: keptXs, top: ys[0], bottom: ys[nR], nCols, lowConfidence } },
+      block: { type: 'table', rows: tableRows, meta: { page: pageNum, xs: keptXs, x0: xs[0], x1: xs[nC], top: ys[0], bottom: ys[nR], nCols, lowConfidence } },
     });
     tIndex++;
   }
@@ -547,7 +569,7 @@ function structTables(frags, pageNum, log) {
     const ys = tf.map(f => f.y);
     out.push({
       order: Math.min(...tf.map(f => f.order)),
-      block: { type: 'table', rows: tableRows, meta: { page: pageNum, xs: [...colStarts, Math.max(...tf.map(f => f.x + f.w))], top: Math.min(...ys), bottom: Math.max(...ys), nCols, inferred: true } },
+      block: { type: 'table', rows: tableRows, meta: { page: pageNum, xs: [...colStarts, Math.max(...tf.map(f => f.x + f.w))], x0: Math.min(...tf.map(f => f.x)) - 2, x1: Math.max(...tf.map(f => f.x + f.w)) + 2, top: Math.min(...tf.map(f => f.y - f.size)) - 2, bottom: Math.max(...ys) + 4, nCols, inferred: true } },
     });
     idx++;
     void tid;
@@ -932,7 +954,9 @@ function postProcess(blocks, opts, log, exclude) {
           rows = rows.slice(1);
         }
         prev.rows.push(...rows);
-        prev.meta.bottom = b.meta.bottom;
+        prev.meta.parts = [...(prev.meta.parts || []), b.meta];
+        prev.meta.inferred = prev.meta.inferred || b.meta.inferred;
+        prev.meta.lowConfidence = prev.meta.lowConfidence || b.meta.lowConfidence;
         prev.meta.continued = (prev.meta.continued || 1) + 1;
         log.stats.tables--;
         log.stats.pageMarkersJoined = (log.stats.pageMarkersJoined || 0) + (out3.length - (k + 1));
@@ -946,7 +970,7 @@ function postProcess(blocks, opts, log, exclude) {
 }
 
 /** Render a page to a canvas (used by the side-by-side review). */
-export async function renderPdfPage(buf, pageNum, canvas, maxWidth = 900) {
+export async function renderPdfPage(buf, pageNum, canvas, maxWidth = 900, overlay = null) {
   const pdf = await openPdf(buf);
   try {
     const page = await pdf.getPage(pageNum);
@@ -956,6 +980,7 @@ export async function renderPdfPage(buf, pageNum, canvas, maxWidth = 900) {
     canvas.width = vp.width; canvas.height = vp.height;
     canvas.style.width = (vp.width / (window.devicePixelRatio || 1)) + 'px';
     await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    if (overlay) overlay(canvas.getContext('2d'), scale, window.devicePixelRatio || 1);
     return pdf.numPages;
   } finally {
     await pdf.destroy();

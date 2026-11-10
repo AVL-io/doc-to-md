@@ -379,6 +379,8 @@ export async function verifyConversion({ kind, buf, md, log, pages, opts = {}, c
   else verdict = 'incomplete';
   if (verdict === 'complete' && ((kind === 'pdf' && warnings.some(w => /review/i.test(w))) || duplication)) verdict = 'review';
 
+  const reviewItems = buildReviewItems({ kind, log, passages, structure, tableChecks, warnings, duplication });
+
   const pagesWithLoss = kind === 'pdf' ? [...perLoc.entries()].filter(([, v]) => v.missing > 0).map(([k, v]) => ({ loc: k, missing: v.missing, total: v.total })) : [];
 
   return {
@@ -391,7 +393,69 @@ export async function verifyConversion({ kind, buf, md, log, pages, opts = {}, c
     exclusions: [...exMap.values()],
     warnings,
     pagesWithLoss,
+    reviewItems,
   };
+}
+
+/**
+ * The checklist of items a person should look at, most serious first.
+ * status: 'bad' (missing / mismatched) or 'warn' (review recommended).
+ * highlight: where to show the item in the side-by-side review.
+ */
+function buildReviewItems({ kind, log, passages, structure, tableChecks, warnings, duplication }) {
+  const items = [];
+  const pageOf = (loc) => { const m = /^Page (\d+)$/.exec(loc || ''); return m ? +m[1] : null; };
+  for (const p of passages.slice(0, 300)) {
+    const words = p.words;
+    const text = words.join(' ');
+    const hasNumber = words.some(isNumberToken);
+    const page = pageOf(p.loc);
+    items.push({
+      status: 'bad', page, location: p.loc,
+      item: `"${text.length > 80 ? text.slice(0, 80) + '…' : text}"`,
+      reason: hasNumber ? 'Number(s) not found in the output.' : 'Text not found in the output.',
+      highlight: page ? { kind: 'text', page, words } : null,
+    });
+  }
+  for (const t of tableChecks) {
+    if (t.ok) continue;
+    const m = t.mismatches[0];
+    items.push({
+      status: 'bad', location: `Table ${t.index}`, item: `Table ${t.index}`,
+      reason: t.summary + (m ? ` First difference: row ${m.row}, column ${m.col}.` : ''),
+      highlight: { kind: 'table', docIndex: t.index },
+    });
+  }
+  for (const s of structure) {
+    if (s.ok) continue;
+    items.push({ status: kind === 'xlsx' ? 'bad' : 'warn', location: 'Whole document', item: s.label, reason: `Source ${s.source}, output ${s.output}. ${s.note || ''}`.trim(), highlight: null });
+  }
+  for (const t of log.tables || []) {
+    if (!t.inferred && !t.lowConfidence) continue;
+    const pages = [...new Set(t.boxes.map(b => b.page))];
+    items.push({
+      status: 'warn', page: t.page,
+      location: pages.length > 1 ? `Pages ${pages[0]}–${pages[pages.length - 1]}` : `Page ${t.page}`,
+      item: `Table ${t.docIndex} (${t.rows} rows × ${t.cols} columns${t.merged ? `, ${t.merged} merged cell${t.merged > 1 ? 's' : ''}` : ''})`,
+      reason: t.lowConfidence
+        ? 'Irregular border lines: some merged cells could not be resolved. Check the cell layout.'
+        : 'No border lines: structure rebuilt from the PDF tags. Check row/column alignment and merged cells.',
+      highlight: { kind: 'table', page: t.page, indexOnPage: t.indexOnPage, docIndex: t.docIndex, boxes: t.boxes },
+    });
+  }
+  for (const w of warnings) {
+    if (/were rebuilt from the PDF tags|irregular borders/.test(w)) continue; // listed per table above
+    const pm = /^Page (\d+) contains no extractable text/.exec(w);
+    items.push({
+      status: pm ? 'bad' : 'warn', page: pm ? +pm[1] : null, location: pm ? `Page ${pm[1]}` : 'Whole document',
+      item: duplication && /appear more often/.test(w) ? 'Possible duplication' : 'Warning', reason: w,
+      highlight: pm ? { kind: 'page', page: +pm[1] } : null,
+    });
+  }
+  const rank = { bad: 0, warn: 1 };
+  items.sort((a, b) => rank[a.status] - rank[b.status] || (a.page ?? 1e9) - (b.page ?? 1e9));
+  items.forEach((it, i) => { it.n = i + 1; it.id = `${it.status}|${it.location}|${it.item}`; });
+  return items;
 }
 
 function row(label, source, output, note = '') {
@@ -441,29 +505,42 @@ function compareGrid(n, src, out) {
 
 // ------------------------------------------------------------ report rendering
 
+export const MARK = { ok: '🟢', warn: '🟠', bad: '🔴' };
+const VERDICT_MARK = { complete: MARK.ok, review: MARK.warn, incomplete: MARK.bad };
+
 const VERDICT_TEXT = {
   complete: 'COMPLETE: all source text and numbers were found in the output, and the structure checks agree.',
   review: 'REVIEW RECOMMENDED: no numbers are missing and coverage is at least 99.5%, but some items need checking (see below).',
   incomplete: 'INCOMPLETE: some text or numbers from the source were not found in the output (see below).',
 };
 
-export function reportToMarkdown(rep, fileName) {
+export function reviewChecklistMarkdown(rep) {
+  const items = rep.reviewItems || [];
+  if (!items.length) return `${MARK.ok} Nothing requires review.`;
+  const esc = (s) => String(s).replace(/\|/g, '/').replace(/\n/g, ' ');
+  return `${items.filter(i => i.status === 'bad').length} item(s) marked ${MARK.bad} and ${items.filter(i => i.status === 'warn').length} item(s) marked ${MARK.warn}.\n\n` +
+    `| # | Status | Location | Item | Reason | Reviewed |\n| --- | --- | --- | --- | --- | --- |\n` +
+    items.map(i => `| ${i.n} | ${MARK[i.status]} | ${esc(i.location)} | ${esc(i.item)} | ${esc(i.reason)} | ☐ |`).join('\n');
+}
+
+export function reportToMarkdown(rep, fileName, { checklist = true } = {}) {
   const L = [];
   const pct = rep.words.coverage.toFixed(2);
   L.push(`# Conversion Verification Report`);
   L.push(`**Source file:** ${fileName}  \n**Checked:** ${new Date().toISOString().slice(0, 16).replace('T', ' ')} (local processing; no data left this computer)`);
-  L.push(`## Result\n\n**${VERDICT_TEXT[rep.verdict]}**`);
-  L.push(`## 1. Text inventory check\n\n| Measure | Value |\n| --- | --- |\n| Words in source | ${rep.words.total} |\n| Found in output | ${rep.words.matched} |\n| Deliberately excluded (options) | ${rep.words.excluded} |\n| Not found | ${rep.words.missing} |\n| Coverage of retained content | ${pct}% |`);
-  L.push(`## 2. Numerical data check\n\n| Measure | Value |\n| --- | --- |\n| Numbers in source | ${rep.numbers.total} |\n| Found in output | ${rep.numbers.matched} |\n| Deliberately excluded | ${rep.numbers.excluded} |\n| Not found | ${rep.numbers.missing.length} |`);
-  if (rep.numbers.missing.length) L.push(rep.numbers.missing.slice(0, 100).map(m => `- \`${m.value}\` (${m.loc})`).join('\n'));
-  L.push(`## 3. Structural check\n\n| Element | Source | Output | Status | Note |\n| --- | --- | --- | --- | --- |\n` + rep.structure.map(s => `| ${s.label} | ${s.source} | ${s.output} | ${s.ok ? 'OK' : 'CHECK'} | ${s.note || ''} |`).join('\n'));
+  L.push(`## Result\n\n${VERDICT_MARK[rep.verdict]} **${VERDICT_TEXT[rep.verdict]}**\n\nKey: ${MARK.ok} OK · ${MARK.warn} review recommended · ${MARK.bad} missing or mismatched`);
+  if (checklist) L.push(`## Items to review\n\n` + reviewChecklistMarkdown(rep));
+  L.push(`## 1. Text inventory check\n\n| Measure | Value |\n| --- | --- |\n| Words in source | ${rep.words.total} |\n| Found in output | ${rep.words.matched} |\n| Deliberately excluded (options) | ${rep.words.excluded} |\n| Not found | ${rep.words.missing ? MARK.bad + ' ' : MARK.ok + ' '}${rep.words.missing} |\n| Coverage of retained content | ${pct}% |`);
+  L.push(`## 2. Numerical data check\n\n| Measure | Value |\n| --- | --- |\n| Numbers in source | ${rep.numbers.total} |\n| Found in output | ${rep.numbers.matched} |\n| Deliberately excluded | ${rep.numbers.excluded} |\n| Not found | ${rep.numbers.missing.length ? MARK.bad + ' ' : MARK.ok + ' '}${rep.numbers.missing.length} |`);
+  if (rep.numbers.missing.length) L.push(rep.numbers.missing.slice(0, 100).map(m => `- ${MARK.bad} \`${m.value}\` (${m.loc})`).join('\n'));
+  L.push(`## 3. Structural check\n\n| Element | Source | Output | Status | Note |\n| --- | --- | --- | --- | --- |\n` + rep.structure.map(s => `| ${s.label} | ${s.source} | ${s.output} | ${s.ok ? MARK.ok + ' OK' : MARK.bad + ' CHECK'} | ${s.note || ''} |`).join('\n'));
   if (rep.tableChecks.length) {
-    L.push(`### Table-by-table comparison\n\n` + rep.tableChecks.map(t => `- **Table ${t.index}:** ${t.ok ? 'OK' : 'CHECK'}: ${t.summary}` + t.mismatches.map(m => `\n  - Row ${m.row}, column ${m.col}: source "${m.source}" / output "${m.output}"`).join('')).join('\n'));
+    L.push(`### Table-by-table comparison\n\n` + rep.tableChecks.map(t => `- ${t.ok ? MARK.ok : MARK.bad} **Table ${t.index}:** ${t.ok ? 'OK' : 'CHECK'}: ${t.summary}` + t.mismatches.map(m => `\n  - Row ${m.row}, column ${m.col}: source "${m.source}" / output "${m.output}"`).join('')).join('\n'));
   }
   L.push(`## 4. Deliberate exclusions\n\n` + (rep.exclusions.length ? `| Category | Items | Words | Examples |\n| --- | --- | --- | --- |\n` + rep.exclusions.map(e => `| ${e.category} | ${e.count} | ${e.words} | ${e.examples.map(x => x.replace(/\|/g, '/')).join('; ')} |`).join('\n') : 'None.'));
-  L.push(`## 5. Text not found in output\n\n` + (rep.passages.length ? rep.passages.map(p => `- **${p.loc}:** ${p.text}`).join('\n') + (rep.passageCount > rep.passages.length ? `\n- … ${rep.passageCount - rep.passages.length} more` : '') : 'None.'));
-  if (rep.pagesWithLoss.length) L.push(`### Pages with missing text\n\n` + rep.pagesWithLoss.map(p => `- ${p.loc}: ${p.missing} of ${p.total} words`).join('\n'));
-  L.push(`## 6. Warnings\n\n` + (rep.warnings.length ? rep.warnings.map(w => `- ${w}`).join('\n') : 'None.'));
+  L.push(`## 5. Text not found in output\n\n` + (rep.passages.length ? rep.passages.map(p => `- ${MARK.bad} **${p.loc}:** ${p.text}`).join('\n') + (rep.passageCount > rep.passages.length ? `\n- … ${rep.passageCount - rep.passages.length} more` : '') : 'None.'));
+  if (rep.pagesWithLoss.length) L.push(`### Pages with missing text\n\n` + rep.pagesWithLoss.map(p => `- ${MARK.bad} ${p.loc}: ${p.missing} of ${p.total} words`).join('\n'));
+  L.push(`## 6. Warnings\n\n` + (rep.warnings.length ? rep.warnings.map(w => `- ${MARK.warn} ${w}`).join('\n') : 'None.'));
   L.push(`## Limitations\n\nThe text check confirms that every word and number is *present* in the output. It does not fully prove that each value sits in the correct table cell. ${rep.kind === 'pdf' ? 'For PDF files, table structure is reconstructed from the page layout, so critical tables should be compared visually with the original (use the side-by-side review).' : 'For Word and Excel files, table positions are compared cell by cell against the source (section 3).'}`);
   return L.join('\n\n') + '\n';
 }

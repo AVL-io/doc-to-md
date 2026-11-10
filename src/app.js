@@ -4,7 +4,7 @@ import { setPdfWorkerSrc } from './lib/pdf-reader.js';
 
 const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 const $ = (id) => document.getElementById(id);
-const state = { mode: 'to', files: [], results: [] };
+const state = { mode: 'to', files: [], results: { to: [], from: [] } };   // results are kept per tab
 
 // The single-file offline build provides the PDF worker as a blob URL.
 setPdfWorkerSrc(window.__PDF_WORKER_URL__ || './pdf.worker.min.mjs');
@@ -55,7 +55,9 @@ function setMode(mode) {
   $('file-input').accept = (mode === 'to' ? TO_MD_EXT : FROM_MD_EXT).map(e => '.' + e).join(',');
   $('formats').hidden = mode !== 'from';
   $('convert-btn').textContent = mode === 'to' ? 'Convert to Markdown' : 'Convert Markdown';
+  $('progress').hidden = true;
   renderFiles();
+  renderResults();
 }
 
 // ------------------------------------------------------------ file intake
@@ -156,7 +158,7 @@ async function runToMarkdown() {
       console.error(e);
       result = { file: f, ok: false, error: e && e.message ? e.message : String(e) };
     }
-    state.results.unshift(result);
+    state.results.to.unshift(result);
     renderResults();
   }
   setProgress(1, `Finished: ${n} file${n > 1 ? 's' : ''} processed.`);
@@ -181,7 +183,7 @@ async function runFromMarkdown() {
       console.error(e);
       result = { file: f, ok: false, error: e && e.message ? e.message : String(e) };
     }
-    state.results.unshift(result);
+    state.results.from.unshift(result);
     renderResults();
   }
   setProgress(1, 'Finished.');
@@ -192,9 +194,46 @@ async function runFromMarkdown() {
 // ------------------------------------------------------------ results
 const VERDICT_LABEL = { complete: 'Complete', review: 'Review recommended', incomplete: 'Incomplete' };
 
+function currentResults() {
+  return state.results[state.mode];
+}
+
 function renderResults() {
-  $('results').hidden = !state.results.length;
-  $('result-list').replaceChildren(...state.results.map(resultCard));
+  const list = currentResults();
+  $('results').hidden = !list.length;
+  $('result-list').replaceChildren(...list.map(resultCard));
+}
+
+function clearResults() {
+  const list = currentResults();
+  if (!list.length) return;
+  const n = list.length;
+  if (!confirm(`Remove ${n} result${n > 1 ? 's' : ''} from this list?\n\nFiles you have already downloaded are not affected.`)) return;
+  state.results[state.mode] = [];
+  $('progress').hidden = true;
+  renderResults();
+}
+
+// ---- "reviewed" ticks (kept in this browser only) ----
+function reviewKey(r) {
+  return `doc-to-md:reviewed:${r.file.name}|${r.file.size}|${r.file.lastModified}`;
+}
+function loadReviewed(r) {
+  try { return new Set(JSON.parse(localStorage.getItem(reviewKey(r)) || '[]')); } catch { return new Set(); }
+}
+function saveReviewed(r, set) {
+  try { localStorage.setItem(reviewKey(r), JSON.stringify([...set])); } catch { /* storage unavailable */ }
+}
+
+function reviewCounts(r) {
+  const items = r.report.reviewItems || [];
+  const done = loadReviewed(r);
+  return {
+    bad: items.filter(i => i.status === 'bad').length,
+    warn: items.filter(i => i.status === 'warn').length,
+    total: items.length,
+    reviewed: items.filter(i => done.has(i.id)).length,
+  };
 }
 
 function resultCard(r) {
@@ -209,19 +248,25 @@ function resultCard(r) {
       el('div', { class: 'result-actions' }, r.outputs.map(o => el('button', { class: 'btn small', onclick: () => download(o.blob, o.name) }, `Download ${o.name}`))));
   }
   const rep = r.report;
+  const c = reviewCounts(r);
   return el('li', { class: 'result' },
     el('div', { class: 'result-top' },
       el('span', { class: 'name' }, `${r.file.name} → ${r.outName}`),
       el('span', { class: `verdict ${rep.verdict}` }, VERDICT_LABEL[rep.verdict])),
     el('div', { class: 'stats' },
       el('span', {}, 'Text coverage: ', el('b', {}, rep.words.coverage.toFixed(2) + '%')),
-      el('span', {}, 'Numbers missing: ', el('b', {}, String(rep.numbers.missing.length))),
-      el('span', {}, 'Words not found: ', el('b', {}, String(rep.words.missing))),
+      el('span', {}, 'Numbers missing: ', el('b', { class: rep.numbers.missing.length ? 'st-bad' : '' }, String(rep.numbers.missing.length))),
+      el('span', {}, 'Words not found: ', el('b', { class: rep.words.missing ? 'st-bad' : '' }, String(rep.words.missing))),
       el('span', {}, 'Removed by options: ', el('b', {}, rep.words.excluded + ' words')),
       r.kind === 'pdf' ? el('span', {}, 'Tables: ', el('b', {}, String(r.log.stats.tables))) : null),
+    c.total ? el('div', { class: 'review-summary' },
+      el('span', { class: 'pill st-bad', hidden: !c.bad }, `${c.bad} missing / mismatched`),
+      el('span', { class: 'pill st-warn', hidden: !c.warn }, `${c.warn} to check`),
+      el('span', { class: 'muted' }, `${c.reviewed} of ${c.total} reviewed`))
+      : el('div', { class: 'review-summary' }, el('span', { class: 'pill st-ok' }, 'Nothing requires review')),
     el('div', { class: 'result-actions' },
       el('button', { class: 'btn small primary', onclick: () => download(mdBlob(r.md), r.outName) }, 'Download .md'),
-      el('button', { class: 'btn small', onclick: () => openViewer(r, 'report') }, 'Verification report'),
+      el('button', { class: 'btn small', onclick: () => openViewer(r, 'report') }, c.total ? `Review checklist (${c.total})` : 'Verification report'),
       el('button', { class: 'btn small', onclick: () => openViewer(r, 'review') }, 'Side-by-side review'),
       el('button', { class: 'btn small', onclick: () => download(mdBlob(r.reportMd), r.outName.replace(/\.md$/, '.verification.md')) }, 'Download report')));
 }
@@ -231,7 +276,7 @@ async function downloadZip() {
   const zip = new JSZip();
   const used = new Set();
   const unique = (n) => { let x = n, k = 2; while (used.has(x)) x = n.replace(/(\.[^.]+)$/, ` (${k++})$1`); used.add(x); return x; };
-  for (const r of state.results) {
+  for (const r of currentResults()) {
     if (!r.ok) continue;
     if (r.kind === 'md') for (const o of r.outputs) zip.file(unique(o.name), o.blob);
     else { zip.file(unique(r.outName), r.md); zip.file(unique('verification/' + r.outName.replace(/\.md$/, '.verification.md')), r.reportMd); }
@@ -240,65 +285,234 @@ async function downloadZip() {
 }
 
 // ------------------------------------------------------------ viewer
-async function openViewer(r, tab) {
+const STATUS_TEXT = { bad: 'Missing', warn: 'Check' };
+
+async function openViewer(r, tab, ctx = {}) {
   const dlg = $('viewer');
   $('viewer-title').textContent = r.file.name;
   const tabs = [
+    ['report', (r.report.reviewItems || []).length ? 'Review checklist & report' : 'Verification report'],
     ['review', 'Side-by-side review'],
-    ['report', 'Verification report'],
     ['source', 'Markdown source'],
   ];
   const nav = $('viewer-tabs');
-  const show = async (t) => {
+  const show = async (t, c = {}) => {
     nav.querySelectorAll('button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
     const body = $('viewer-body');
+    body.scrollTop = 0;
     body.replaceChildren(el('p', { class: 'muted' }, 'Loading…'));
     const { markdownToSafeHtml } = await import('./lib/html-writer.js');
     if (t === 'report') {
-      const div = el('div', { class: 'md-body' });
-      div.innerHTML = markdownToSafeHtml(r.reportMd);
-      body.replaceChildren(div);
+      body.replaceChildren(await reportPane(r, markdownToSafeHtml, (item) => show('review', { focus: item })));
     } else if (t === 'source') {
       body.replaceChildren(el('pre', { class: 'source' }, r.md));
     } else {
-      body.replaceChildren(await reviewPane(r, markdownToSafeHtml));
+      body.replaceChildren(await reviewPane(r, markdownToSafeHtml, c.focus || null));
     }
   };
   nav.replaceChildren(...tabs.map(([k, label]) => el('button', { 'data-tab': k, onclick: () => show(k) }, label)));
-  dlg.showModal();
-  await show(tab);
+  if (!dlg.open) dlg.showModal();
+  dlg.onclose = () => renderResults();   // refresh the "reviewed" counts on the cards
+  await show(tab, ctx);
 }
 
-async function reviewPane(r, toHtml) {
+/** Report tab: interactive checklist on top, then the colour-coded report. */
+async function reportPane(r, toHtml, onShow) {
+  const { reportToMarkdown } = await import('./lib/verify.js');
+  const items = r.report.reviewItems || [];
+  const done = loadReviewed(r);
+  const wrap = el('div', { class: 'md-body report' });
+
+  wrap.append(el('h2', {}, 'Items to review'));
+  if (!items.length) {
+    wrap.append(el('p', { class: 'st-ok' }, '🟢 Nothing requires review.'));
+  } else {
+    const progress = el('span', { class: 'muted' });
+    const updateProgress = () => { progress.textContent = `${items.filter(i => done.has(i.id)).length} of ${items.length} reviewed`; };
+    const onlyOpen = el('input', { type: 'checkbox', id: 'only-open' });
+    const tbody = el('tbody');
+    const renderRows = () => {
+      tbody.replaceChildren(...items.filter(i => !onlyOpen.checked || !done.has(i.id)).map(i => {
+        const box = el('input', { type: 'checkbox', 'aria-label': `Mark item ${i.n} as reviewed`, checked: done.has(i.id) });
+        const tr = el('tr', { class: `st-${i.status}${done.has(i.id) ? ' reviewed' : ''}` },
+          el('td', {}, String(i.n)),
+          el('td', {}, el('span', { class: `pill st-${i.status}` }, `${i.status === 'bad' ? '🔴' : '🟠'} ${STATUS_TEXT[i.status]}`)),
+          el('td', {}, i.location),
+          el('td', {}, i.item),
+          el('td', {}, i.reason),
+          el('td', { class: 'nowrap' }, i.highlight ? el('button', { class: 'btn small', onclick: () => onShow(i) }, 'Show') : el('span', { class: 'muted' }, '—')),
+          el('td', { class: 'center' }, box));
+        box.addEventListener('change', () => {
+          if (box.checked) done.add(i.id); else done.delete(i.id);
+          saveReviewed(r, done);
+          tr.classList.toggle('reviewed', box.checked);
+          updateProgress();
+          if (onlyOpen.checked) renderRows();
+        });
+        return tr;
+      }));
+    };
+    onlyOpen.addEventListener('change', renderRows);
+    renderRows();
+    updateProgress();
+    const bad = items.filter(i => i.status === 'bad').length, warn = items.length - bad;
+    wrap.append(
+      el('div', { class: 'checklist-head' },
+        el('span', { class: 'pill st-bad', hidden: !bad }, `🔴 ${bad} missing / mismatched`),
+        el('span', { class: 'pill st-warn', hidden: !warn }, `🟠 ${warn} to check`),
+        progress,
+        el('label', { class: 'only-open' }, onlyOpen, ' Show only items not yet reviewed')),
+      el('div', { class: 'table-scroll' }, el('table', { class: 'checklist' },
+        el('thead', {}, el('tr', {}, ['#', 'Status', 'Location', 'Item', 'Reason', '', 'Reviewed'].map(h => el('th', {}, h)))),
+        tbody)),
+      el('p', { class: 'muted small' }, 'Ticks are saved in this browser only. "Show" opens the side-by-side review at the item, with the area outlined on the original page.'));
+  }
+
+  const rest = el('div');
+  rest.innerHTML = toHtml(reportToMarkdown(r.report, r.file.name, { checklist: false }));
+  colourise(rest);
+  wrap.append(rest);
+  return wrap;
+}
+
+/** Give report rows and lines the colour of their status marker. */
+function colourise(root) {
+  const cls = (t) => {
+    const marks = ['🔴', '🟠', '🟢'].filter(m => t.includes(m));
+    if (marks.length !== 1) return null;   // e.g. the colour key line
+    return { '🔴': 'st-bad', '🟠': 'st-warn', '🟢': 'st-ok' }[marks[0]];
+  };
+  for (const e of root.querySelectorAll('td, li, p')) {
+    if (e.closest('li') && e.tagName !== 'LI') continue;
+    const c = cls(e.textContent);
+    if (!c) continue;
+    if (e.tagName === 'TD') e.parentElement.classList.add(c); else e.classList.add(c);
+  }
+}
+
+/** Top-level tables of a rendered fragment, in document order. */
+function topTables(root) {
+  return [...root.querySelectorAll('table')].filter(t => !t.parentElement.closest('table'));
+}
+
+async function reviewPane(r, toHtml, focus) {
+  const items = r.report.reviewItems || [];
   const right = el('div', { class: 'md-body' });
+  const legend = el('div', { class: 'legend' },
+    el('span', {}, el('i', { class: 'sw warn' }), 'Check (e.g. table rebuilt without border lines)'),
+    el('span', {}, el('i', { class: 'sw bad' }), 'Missing or mismatched'),
+    el('span', {}, el('i', { class: 'sw focus' }), 'Selected item'));
+
   if (r.kind !== 'pdf') {
     right.innerHTML = toHtml(r.md);
-    const note = el('div', {}, el('p', { class: 'muted' }, r.kind === 'docx'
-      ? 'Word documents have no fixed pages, so the original cannot be displayed here. Compare the rendered output on the right with the document open in Word. Table positions are also compared cell by cell in the verification report.'
-      : 'Excel cells are compared value by value in the verification report. The rendered output is shown on the right.'));
+    const tables = topTables(right);
+    for (const i of items) {
+      if (i.highlight?.kind !== 'table') continue;
+      const t = tables[i.highlight.docIndex - 1];
+      if (t) t.classList.add(i.status === 'bad' ? 'hl-bad' : 'hl-warn');
+    }
+    const note = el('div', {}, legend, el('p', { class: 'muted' }, r.kind === 'docx'
+      ? 'Word documents have no fixed pages, so the original cannot be displayed here. Compare the rendered output on the right with the document open in Word. Outlined tables are those that differ from the source in the cell-by-cell check.'
+      : 'Excel cells are compared value by value in the verification report. The rendered output is shown on the right.'),
+      itemList(items.filter(i => i.highlight?.kind === 'table'), (i) => focusOutput(i)));
+    const focusOutput = (i) => {
+      const t = topTables(right)[i.highlight.docIndex - 1];
+      right.querySelectorAll('.hl-focus').forEach(x => x.classList.remove('hl-focus'));
+      if (t) { t.classList.add('hl-focus'); t.scrollIntoView({ block: 'center' }); }
+    };
+    if (focus) setTimeout(() => focusOutput(focus), 50);
     return el('div', { class: 'split' }, note, right);
   }
-  // PDF: original page on the left, the matching part of the output on the right
+
+  // ---- PDF: original page with outlines on the left, converted output on the right ----
   const { renderPdfPage } = await import('./lib/pdf-reader.js');
+  const { tokens } = await import('./lib/verify.js');
   const canvas = el('canvas', { class: 'page' });
   const input = el('input', { type: 'number', min: '1', value: '1', 'aria-label': 'Page number' });
   const total = el('span', { class: 'muted' });
-  const left = el('div', {}, el('div', { class: 'page-nav' },
-    el('button', { class: 'btn small', onclick: () => go(+input.value - 1) }, '◀'), 'Page ', input, total,
-    el('button', { class: 'btn small', onclick: () => go(+input.value + 1) }, '▶')), canvas);
+  const pageItems = items.filter(i => i.highlight && i.highlight.page);
+  const itemPages = [...new Set(pageItems.flatMap(i => i.highlight.boxes ? i.highlight.boxes.map(b => b.page) : [i.highlight.page]))].sort((a, b) => a - b);
+  const left = el('div', {},
+    el('div', { class: 'page-nav' },
+      el('button', { class: 'btn small', title: 'Previous page', onclick: () => go(+input.value - 1) }, '◀'), 'Page ', input, total,
+      el('button', { class: 'btn small', title: 'Next page', onclick: () => go(+input.value + 1) }, '▶'),
+      itemPages.length ? el('button', { class: 'btn small', onclick: () => go(itemPages.filter(p => p < +input.value).pop() || itemPages[itemPages.length - 1]) }, '◀ Flagged page') : null,
+      itemPages.length ? el('button', { class: 'btn small', onclick: () => go(itemPages.find(p => p > +input.value) || itemPages[0]) }, 'Flagged page ▶') : null),
+    legend, canvas);
   const sections = splitByPage(r.md);
-  let pages = 1;
+  const pageData = new Map((r.pages || []).map(p => [p.num, p]));
+  let pages = (r.pages || []).length || 1;
+  let current = focus;
+
+  const draw = (p) => (ctx, scale, dpr) => {
+    const rect = (x0, y0, x1, y1, kind, focused) => {
+      const pad = 3;
+      ctx.save();
+      ctx.lineWidth = (focused ? 4 : 2) * dpr;
+      const col = kind === 'bad' ? [200, 30, 40] : [230, 140, 0];
+      ctx.fillStyle = `rgba(${col.join(',')},${focused ? 0.16 : 0.1})`;
+      ctx.strokeStyle = focused ? 'rgb(30,100,220)' : `rgb(${col.join(',')})`;
+      ctx.fillRect((x0 - pad) * scale, (y0 - pad) * scale, (x1 - x0 + 2 * pad) * scale, (y1 - y0 + 2 * pad) * scale);
+      ctx.strokeRect((x0 - pad) * scale, (y0 - pad) * scale, (x1 - x0 + 2 * pad) * scale, (y1 - y0 + 2 * pad) * scale);
+      ctx.restore();
+    };
+    let focusTop = null;
+    for (const i of pageItems) {
+      const h = i.highlight;
+      const focused = current && current.id === i.id;
+      if (h.kind === 'table') {
+        for (const b of h.boxes || []) if (b.page === p) {
+          rect(b.x0, b.top, b.x1, b.bottom, i.status, focused);
+          if (focused && focusTop == null) focusTop = b.top;
+        }
+      } else if (h.kind === 'text' && h.page === p) {
+        // outline only the text lines that best match the missing passage
+        const want = new Set(h.words);
+        const scored = (pageData.get(p)?.items || []).map(it => ({ it, score: new Set(tokens(it.s).filter(t => want.has(t))).size }));
+        const best = Math.max(0, ...scored.map(x => x.score));
+        for (const { it, score } of scored) {
+          if (!best || score < best) continue;
+          rect(it.x, it.y - it.h, it.x + it.w, it.y + it.h * 0.25, 'bad', focused);
+          if (focused && focusTop == null) focusTop = it.y - it.h;
+        }
+      }
+    }
+    if (focusTop != null) setTimeout(() => { left.scrollTop = Math.max(0, canvas.offsetTop + focusTop * scale / dpr - 80); }, 0);
+  };
+
   async function go(p) {
     p = Math.max(1, Math.min(pages, p || 1));
     input.value = p;
-    pages = await renderPdfPage(r.buf, p, canvas, Math.min(900, left.clientWidth - 24 || 700));
+    pages = await renderPdfPage(r.buf, p, canvas, Math.min(900, left.clientWidth - 24 || 700), draw(p));
     total.textContent = ` of ${pages}`;
     input.max = String(pages);
-    right.innerHTML = toHtml(sections.get(p) || (sections.size ? '*(No converted content was marked for this page. The table or paragraph may continue from the previous page.)*' : r.md));
+    const hasSections = sections.size > 0;
+    right.innerHTML = toHtml(hasSections ? (sections.get(p) || '*(No converted content was marked for this page. The table or paragraph may continue from the previous page.)*') : r.md);
+    // outline the matching tables in the output
+    const tables = topTables(right);
+    for (const i of pageItems) {
+      const h = i.highlight;
+      if (h.kind !== 'table') continue;
+      const t = hasSections ? (h.page === p ? tables[h.indexOnPage - 1] : null) : tables[h.docIndex - 1];
+      if (!t) continue;
+      t.classList.add(i.status === 'bad' ? 'hl-bad' : 'hl-warn');
+      if (current && current.id === i.id) { t.classList.add('hl-focus'); setTimeout(() => t.scrollIntoView({ block: 'start' }), 0); }
+    }
+    // missing text on this page cannot be shown in the output: list it instead
+    const missing = pageItems.filter(i => i.highlight.kind === 'text' && i.highlight.page === p);
+    if (missing.length) right.prepend(el('div', { class: 'missing-note' }, el('b', {}, '🔴 Not found in the converted output (outlined in red on the page):'),
+      el('ul', {}, missing.map(i => el('li', {}, i.item)))));
   }
   input.addEventListener('change', () => go(+input.value));
-  setTimeout(() => go(1), 0);
+  const start = focus ? (focus.highlight.boxes ? focus.highlight.boxes[0].page : focus.highlight.page) : 1;
+  setTimeout(() => go(start), 0);
   return el('div', { class: 'split' }, left, right);
+}
+
+function itemList(items, onPick) {
+  if (!items.length) return null;
+  return el('ul', { class: 'item-list' }, items.map(i => el('li', { class: `st-${i.status}` },
+    el('button', { class: 'btn small', onclick: () => onPick(i) }, 'Show'), ` ${i.n}. ${i.item}: ${i.reason}`)));
 }
 
 function splitByPage(md) {
@@ -359,6 +573,7 @@ function init() {
   $('convert-btn').addEventListener('click', () => (state.mode === 'to' ? runToMarkdown() : runFromMarkdown()));
   $('clear-btn').addEventListener('click', () => { state.files = []; renderFiles(); });
   $('zip-btn').addEventListener('click', downloadZip);
+  $('clear-results-btn').addEventListener('click', clearResults);
   $('viewer-close').addEventListener('click', () => $('viewer').close());
   setupDropzone();
   setMode('to');

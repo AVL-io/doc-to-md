@@ -61,7 +61,7 @@ export async function convertToMarkdown(file, options, onProgress = () => {}) {
   // in pure-Markdown mode merged values are repeated on purpose; the duplication check uses the merged form
   const checkMd = opts.tableMode === 'flatten' ? toMarkdown(res.doc, { tableMode: 'html' }) : undefined;
   const report = await verifyConversion({ kind, buf, md, log: res.log, pages: res.pages, opts, checkMd });
-  return { kind, md, report, reportMd: reportToMarkdown(report, file.name), log: res.log, buf };
+  return { kind, md, report, reportMd: reportToMarkdown(report, file.name), log: res.log, buf, pages: res.pages };
 }
 
 export const OUTPUT_FORMATS = {
