@@ -49,12 +49,19 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 function setMode(mode) {
   state.mode = mode;
   state.files = [];
+  document.body.dataset.mode = mode;   // drives the colour theme of each mode
   $('tab-to').setAttribute('aria-selected', String(mode === 'to'));
   $('tab-from').setAttribute('aria-selected', String(mode === 'from'));
-  $('dz-sub').textContent = mode === 'to' ? 'or click to choose · .pdf, .docx, .xlsx' : 'or click to choose · .md files';
+  const steps = mode === 'to'
+    ? ['Add documents', 'Choose what to remove', 'Download .md + report']
+    : ['Add .md files', 'Pick output formats', 'Download documents'];
+  $('steps').replaceChildren(...steps.map((s, i) => el('li', {}, el('span', { class: 'n' }, String(i + 1)), s)));
+  $('dz-icon').textContent = mode === 'to' ? '📄' : '📝';
+  $('dz-title').textContent = mode === 'to' ? 'Drop Word, Excel or PDF documents' : 'Drop Markdown (.md) files';
+  $('dz-sub').replaceChildren(...(mode === 'to' ? ['PDF', 'DOCX', 'XLSX'] : ['MD']).map(t => el('span', { class: 'chip' }, t)), el('span', {}, ' or click to choose'));
   $('file-input').accept = (mode === 'to' ? TO_MD_EXT : FROM_MD_EXT).map(e => '.' + e).join(',');
   $('formats').hidden = mode !== 'from';
-  $('convert-btn').textContent = mode === 'to' ? 'Convert to Markdown' : 'Convert Markdown';
+  $('convert-btn').textContent = mode === 'to' ? 'Convert to Markdown' : 'Create documents';
   $('progress').hidden = true;
   renderFiles();
   renderResults();

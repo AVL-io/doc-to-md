@@ -30,33 +30,39 @@
   </div>
 </header>
 
+<div class="mode-stripe" aria-hidden="true"></div>
+
 <div class="banner" id="update-banner" hidden>
   A new version of the app is available. <button class="btn small" id="update-btn">Update now</button>
 </div>
 
 <main>
-  <nav class="tabs" role="tablist">
-    <button role="tab" id="tab-to" aria-selected="true" aria-controls="panel">Document → Markdown</button>
-    <button role="tab" id="tab-from" aria-selected="false" aria-controls="panel">Markdown → Document</button>
+  <nav class="modes" role="tablist" aria-label="Conversion direction">
+    <button role="tab" class="mode-card" id="tab-to" aria-selected="true" aria-controls="panel"><span aria-hidden="true">📄</span> Document → Markdown</button>
+    <button role="tab" class="mode-card" id="tab-from" aria-selected="false" aria-controls="panel"><span aria-hidden="true">📝</span> Markdown → Document</button>
   </nav>
+
+  <ol class="steps" id="steps" aria-label="Steps"></ol>
 
   <section id="panel" role="tabpanel">
     <label class="dropzone" id="dropzone" tabindex="0">
       <input type="file" id="file-input" multiple hidden>
-      <span class="dz-icon" aria-hidden="true">⇪</span>
-      <span class="dz-title" id="dz-title">Drag and drop files here</span>
-      <span class="dz-sub" id="dz-sub">or click to choose · .pdf, .docx, .xlsx</span>
+      <span class="dz-icon" id="dz-icon" aria-hidden="true">📄</span>
+      <span class="dz-title" id="dz-title">Drop Word, Excel or PDF documents</span>
+      <span class="dz-sub" id="dz-sub"></span>
     </label>
 
     <ul class="file-list" id="file-list"></ul>
 
-    <div class="formats" id="formats" hidden>
-      <span class="formats-label">Create:</span>
-      <label><input type="checkbox" name="fmt" value="docx" checked> Word (.docx)</label>
-      <label><input type="checkbox" name="fmt" value="xlsx"> Excel (.xlsx)</label>
-      <label><input type="checkbox" name="fmt" value="pdf"> PDF (.pdf)</label>
-      <label><input type="checkbox" name="fmt" value="html"> Web page (.html)</label>
-    </div>
+    <fieldset class="formats" id="formats" hidden>
+      <legend>Create these formats</legend>
+      <div class="tiles">
+        <label class="tile"><input type="checkbox" name="fmt" value="docx" checked><b>DOCX</b><span>Word</span></label>
+        <label class="tile"><input type="checkbox" name="fmt" value="xlsx"><b>XLSX</b><span>Excel tables</span></label>
+        <label class="tile"><input type="checkbox" name="fmt" value="pdf"><b>PDF</b><span>PDF</span></label>
+        <label class="tile"><input type="checkbox" name="fmt" value="html"><b>HTML</b><span>Web page</span></label>
+      </div>
+    </fieldset>
 
     <div class="cta-row">
       <button class="btn primary big" id="convert-btn" disabled>Convert</button>
