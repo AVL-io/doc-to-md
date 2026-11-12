@@ -4,7 +4,13 @@ import { setPdfWorkerSrc } from './lib/pdf-reader.js';
 
 const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 const $ = (id) => document.getElementById(id);
-const state = { mode: 'to', files: [], results: { to: [], from: [] } };   // results are kept per tab
+// files waiting to be converted and results are both kept per tab
+const state = { mode: 'to', queues: { to: [], from: [] }, results: { to: [], from: [] } };
+Object.defineProperty(state, 'files', {
+  get: () => state.queues[state.mode],
+  set: (v) => { state.queues[state.mode] = v; },
+});
+const MODE_NAME = { to: 'Document → Markdown', from: 'Markdown → Document' };
 
 // The single-file offline build provides the PDF worker as a blob URL.
 setPdfWorkerSrc(window.__PDF_WORKER_URL__ || './pdf.worker.min.mjs');
@@ -48,7 +54,6 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // ------------------------------------------------------------ mode / tabs
 function setMode(mode) {
   state.mode = mode;
-  state.files = [];
   document.body.dataset.mode = mode;   // drives the colour theme of each mode
   $('tab-to').setAttribute('aria-selected', String(mode === 'to'));
   $('tab-from').setAttribute('aria-selected', String(mode === 'from'));
@@ -68,18 +73,72 @@ function setMode(mode) {
 }
 
 // ------------------------------------------------------------ file intake
+/** Each file goes to the converter that handles its type, whichever tab is open. */
 function addFiles(list) {
-  const allowed = state.mode === 'to' ? TO_MD_EXT : FROM_MD_EXT;
+  const added = { to: [], from: [] };
   const rejected = [];
   for (const f of list) {
-    if (!allowed.includes(extOf(f.name))) { rejected.push(f.name); continue; }
-    if (!state.files.some(x => x.name === f.name && x.size === f.size)) state.files.push(f);
+    const ext = extOf(f.name);
+    const mode = TO_MD_EXT.includes(ext) ? 'to' : FROM_MD_EXT.includes(ext) ? 'from' : null;
+    if (!mode) { rejected.push(f.name); continue; }
+    const q = state.queues[mode];
+    if (!q.some(x => x.name === f.name && x.size === f.size)) { q.push(f); added[mode].push(f.name); }
   }
-  if (rejected.length) alert(`These files were not added (unsupported type):\n\n${rejected.join('\n')}\n\nSupported: ${allowed.map(e => '.' + e).join(', ')}`);
+  const here = state.mode, other = here === 'to' ? 'from' : 'to';
+  if (!added[here].length && added[other].length) {
+    // everything dropped belongs to the other converter: switch to it
+    setMode(other);
+    notify('info', `${plural(added[other].length, 'file')} moved to ${MODE_NAME[other]}`,
+      `${typeLabel(other)} are converted here, so the app switched to this converter.`);
+  } else if (added[other].length) {
+    notify('info', `${plural(added[other].length, 'file')} added to ${MODE_NAME[other]}`,
+      `${added[other].join(', ')}. ${typeLabel(other)} belong to the other converter.`,
+      { label: `Go to ${MODE_NAME[other]}`, run: () => setMode(other) });
+  }
+  if (rejected.length) {
+    notify('warn', `${plural(rejected.length, 'file')} not added`,
+      `${rejected.join(', ')}. Supported: .pdf, .docx, .xlsx (to Markdown) and .md (to documents). Older .doc and .xls files must first be saved as .docx or .xlsx.`);
+  }
   renderFiles();
 }
 
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+const typeLabel = (mode) => (mode === 'from' ? 'Markdown (.md) files' : 'Word, Excel and PDF files');
+
+// ------------------------------------------------------------ in-app notices (replace browser pop-ups)
+function notify(kind, title, text, action) {
+  const box = $('notices');
+  const close = () => { n.classList.add('leaving'); setTimeout(() => n.remove(), 200); };
+  const n = el('div', { class: `notice ${kind}`, role: kind === 'warn' ? 'alert' : 'status' },
+    el('span', { class: 'notice-icon', 'aria-hidden': 'true' }, kind === 'warn' ? '⚠️' : 'ℹ️'),
+    el('div', { class: 'notice-body' }, el('b', {}, title), text ? el('p', {}, text) : null,
+      action ? el('button', { class: 'btn small', onclick: () => { action.run(); close(); } }, action.label) : null),
+    el('button', { class: 'icon-btn', 'aria-label': 'Dismiss', onclick: close }, '✕'));
+  box.append(n);
+  setTimeout(close, kind === 'warn' ? 12000 : 8000);
+}
+
+function askConfirm(title, text, okLabel = 'OK') {
+  const dlg = $('confirm-dialog');
+  $('confirm-title').textContent = title;
+  $('confirm-text').textContent = text;
+  $('confirm-ok').textContent = okLabel;
+  return new Promise((resolve) => {
+    dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), { once: true });
+    dlg.returnValue = '';
+    dlg.showModal();
+  });
+}
+
 function renderFiles() {
+  // show how many files are waiting in each converter on its card
+  for (const m of ['to', 'from']) {
+    const n = state.queues[m].length;
+    const badge = $(`count-${m}`);
+    badge.textContent = n ? String(n) : '';
+    badge.hidden = !n;
+    badge.title = n ? `${plural(n, 'file')} waiting` : '';
+  }
   const ul = $('file-list');
   ul.replaceChildren(...state.files.map((f, i) => el('li', {},
     el('span', { class: 'type-tag' }, extOf(f.name)),
@@ -145,7 +204,7 @@ function setProgress(fraction, text) {
 async function runToMarkdown() {
   const opts = await askOptions();
   if (!opts) return;
-  const files = [...state.files];
+  const files = [...state.queues.to];
   $('convert-btn').disabled = true;
   const n = files.length;
   for (let i = 0; i < n; i++) {
@@ -169,14 +228,14 @@ async function runToMarkdown() {
     renderResults();
   }
   setProgress(1, `Finished: ${n} file${n > 1 ? 's' : ''} processed.`);
-  state.files = [];
+  state.queues.to = state.queues.to.filter(f => !files.includes(f));
   renderFiles();
 }
 
 async function runFromMarkdown() {
   const formats = [...document.querySelectorAll('input[name="fmt"]:checked')].map(i => i.value);
-  if (!formats.length) { alert('Select at least one output format.'); return; }
-  const files = [...state.files];
+  if (!formats.length) { notify('warn', 'No output format selected', 'Select at least one format (DOCX, XLSX, PDF or HTML).'); return; }
+  const files = [...state.queues.from];
   $('convert-btn').disabled = true;
   for (let i = 0; i < files.length; i++) {
     const f = files[i];
@@ -194,7 +253,7 @@ async function runFromMarkdown() {
     renderResults();
   }
   setProgress(1, 'Finished.');
-  state.files = [];
+  state.queues.from = state.queues.from.filter(f => !files.includes(f));
   renderFiles();
 }
 
@@ -211,11 +270,11 @@ function renderResults() {
   $('result-list').replaceChildren(...list.map(resultCard));
 }
 
-function clearResults() {
+async function clearResults() {
   const list = currentResults();
   if (!list.length) return;
   const n = list.length;
-  if (!confirm(`Remove ${n} result${n > 1 ? 's' : ''} from this list?\n\nFiles you have already downloaded are not affected.`)) return;
+  if (!await askConfirm(`Remove ${plural(n, 'result')} from this list?`, 'Files you have already downloaded are not affected.', 'Clear results')) return;
   state.results[state.mode] = [];
   $('progress').hidden = true;
   renderResults();

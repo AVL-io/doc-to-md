@@ -106,7 +106,7 @@ Then:
 2. Click **Convert to Markdown**.
 3. Confirm the options.
 
-The two directions are shown as two cards at the top. Each has its own colour theme (navy for Document → Markdown, slate for Markdown → Document), with matching dark-mode versions, a three-step guide and its own drop zone. The `.md` files are downloaded automatically. Each tab (Document → Markdown,
+The two directions are shown as two cards at the top. Each has its own colour theme (navy for Document → Markdown, slate for Markdown → Document), with matching dark-mode versions, a three-step guide and its own drop zone. Files are routed automatically: a Markdown file dropped on Document → Markdown goes to Markdown → Document (and the reverse), and the card shows how many files are waiting. Messages appear as in-app notices rather than browser pop-ups. The `.md` files are downloaded automatically. Each tab (Document → Markdown,
 Markdown → Document) keeps its own results list. **Clear results** empties that
 list; files already downloaded are not affected.
 

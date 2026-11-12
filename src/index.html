@@ -38,8 +38,8 @@
 
 <main>
   <nav class="modes" role="tablist" aria-label="Conversion direction">
-    <button role="tab" class="mode-card" id="tab-to" aria-selected="true" aria-controls="panel"><span aria-hidden="true">📄</span> Document → Markdown</button>
-    <button role="tab" class="mode-card" id="tab-from" aria-selected="false" aria-controls="panel"><span aria-hidden="true">📝</span> Markdown → Document</button>
+    <button role="tab" class="mode-card" id="tab-to" aria-selected="true" aria-controls="panel"><span aria-hidden="true">📄</span> Document → Markdown <span class="count" id="count-to" hidden></span></button>
+    <button role="tab" class="mode-card" id="tab-from" aria-selected="false" aria-controls="panel"><span aria-hidden="true">📝</span> Markdown → Document <span class="count" id="count-from" hidden></span></button>
   </nav>
 
   <ol class="steps" id="steps" aria-label="Steps"></ol>
@@ -91,6 +91,20 @@
   <p>Processing is local: documents are read and converted by this page inside your browser and are never uploaded. After the first visit the app also works offline.</p>
   <p><span id="offline-link-wrap"><a href="doc-to-md-offline.html" download id="offline-link">Download the single-file offline version</a> · </span><span id="version"></span></p>
 </footer>
+
+<div class="notices" id="notices" aria-live="polite"></div>
+
+<!-- Confirmation (replaces the browser's own pop-up) -->
+<dialog id="confirm-dialog" class="confirm">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-text" class="muted"></p>
+    <div class="dialog-actions">
+      <button class="btn ghost" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="confirm-ok">OK</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- Pre-conversion options -->
 <dialog id="options-dialog">
