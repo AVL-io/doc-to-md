@@ -31,7 +31,7 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 const problems = [];
 page.on('pageerror', e => problems.push('page error: ' + e.message));
-page.on('console', m => { if (m.type() === 'error') problems.push('console: ' + m.text()); });
+page.on('console', m => { if (m.type() === 'error' && !/Detected \d+ diacritics/.test(m.text())) problems.push('console: ' + m.text()); });   // the OCR engine reports noisy scans this way
 await page.goto(base);
 await page.waitForFunction(() => window.__docToMd);
 

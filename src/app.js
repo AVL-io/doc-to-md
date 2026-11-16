@@ -1,6 +1,7 @@
 // User interface.
 import { convertToMarkdown, convertFromMarkdown, DEFAULT_OPTIONS, TO_MD_EXT, FROM_MD_EXT, extOf, mdName } from './lib/convert.js';
 import { setPdfWorkerSrc } from './lib/pdf-reader.js';
+import { ocrSupported } from './lib/scan.js';
 import { el, download, mdBlob, sleep } from './lib/util.js';
 
 const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
@@ -150,6 +151,19 @@ function setupDropzone() {
 }
 
 // ------------------------------------------------------------ options dialog
+/** OCR choices: not available in the single-file offline copy; resolution only matters when OCR is on. */
+function syncOcrOptions() {
+  const box = $('opt-ocr');
+  if (!ocrSupported()) {
+    box.checked = false;
+    box.disabled = true;
+    $('ocr-note').textContent = 'OCR is not available in the single-file offline copy. Use the installed app or the web address to convert scanned pages.';
+    $('ocr-prep').hidden = true;
+    $('ocr-prep-status').textContent = '';
+  }
+  document.querySelectorAll('input[name="ocrDpi"]').forEach(r => { r.disabled = !box.checked; });
+}
+
 function askOptions() {
   const dlg = $('options-dialog');
   const form = $('options-form');
@@ -159,8 +173,9 @@ function askOptions() {
   for (const input of form.elements) {
     if (!input.name) continue;
     if (input.type === 'checkbox') input.checked = !!prefs[input.name];
-    if (input.type === 'radio') input.checked = prefs[input.name] === input.value;
+    if (input.type === 'radio') input.checked = String(prefs[input.name]) === input.value;
   }
+  syncOcrOptions();
   return new Promise((resolve) => {
     dlg.addEventListener('close', function onClose() {
       dlg.removeEventListener('close', onClose);
@@ -169,7 +184,7 @@ function askOptions() {
       for (const input of form.elements) {
         if (!input.name) continue;
         if (input.type === 'checkbox') opts[input.name] = input.checked;
-        if (input.type === 'radio' && input.checked) opts[input.name] = input.value;
+        if (input.type === 'radio' && input.checked) opts[input.name] = input.name === 'ocrDpi' ? +input.value : input.value;
       }
       savePrefs(opts);
       resolve(opts);
@@ -192,6 +207,11 @@ async function runToMarkdown() {
   if (!opts) return;
   const files = [...state.queues.to];
   $('convert-btn').disabled = true;
+  const abort = new AbortController();
+  let cancelled = false;
+  const cancelBtn = $('cancel-btn');
+  cancelBtn.hidden = false;
+  cancelBtn.onclick = () => { abort.abort(); cancelBtn.hidden = true; setProgress(0, 'Cancelling…'); };
   const n = files.length;
   for (let i = 0; i < n; i++) {
     const f = files[i];
@@ -199,21 +219,31 @@ async function runToMarkdown() {
     setProgress(base, `Converting ${f.name} (${i + 1} of ${n})…`);
     let result;
     try {
-      const r = await convertToMarkdown(f, opts, (p) => {
-        if (p.stage === 'page') setProgress(base + (p.page / p.pages) * 0.8 / n, `Reading ${f.name}: page ${p.page} of ${p.pages}`);
+      const r = await convertToMarkdown(f, { ...opts, signal: abort.signal }, (p) => {
+        if (p.stage === 'page' && p.ocr) setProgress(base + (0.1 + 0.7 * p.ocr.done / Math.max(1, p.ocr.total)) / n, `Recognising text on scanned pages (OCR) in ${f.name}: ${p.ocr.done} of ${p.ocr.total} done. This takes a few seconds per page.`);
+        else if (p.stage === 'page' && p.note) setProgress(base + 0.1 / n, `${p.note} (${f.name})`);
+        else if (p.stage === 'page') setProgress(base + (p.page / p.pages) * 0.1 / n, `Reading ${f.name}: page ${p.page} of ${p.pages}`);
         else if (p.stage === 'verifying') setProgress(base + 0.9 / n, `Verifying ${f.name}…`);
       });
       result = { file: f, ok: true, ...r, outName: mdName(f.name) };
       if (opts.autoDownload) { download(mdBlob(r.md), result.outName); await sleep(350); }
       if (opts.downloadReports) { download(mdBlob(r.reportMd), result.outName.replace(/\.md$/, '.verification.md')); await sleep(350); }
     } catch (e) {
+      if (e && e.name === 'AbortError') {
+        state.results.to.unshift({ file: f, ok: false, error: 'The conversion was cancelled.' });
+        renderResults();
+        cancelled = true;
+        break;
+      }
       console.error(e);
       result = { file: f, ok: false, error: e && e.message ? e.message : String(e) };
     }
     state.results.to.unshift(result);
     renderResults();
   }
-  setProgress(1, `Finished: ${n} file${n > 1 ? 's' : ''} processed.`);
+  cancelBtn.hidden = true;
+  if (cancelled) setProgress(0, 'Cancelled.');
+  else setProgress(1, `Finished: ${n} file${n > 1 ? 's' : ''} processed.`);
   state.queues.to = state.queues.to.filter(f => !files.includes(f));
   renderFiles();
 }
@@ -368,7 +398,8 @@ function resultCard(r) {
       el('span', {}, 'Numbers missing: ', el('b', { class: rep.numbers.missing.length ? 'st-bad' : '' }, String(rep.numbers.missing.length))),
       el('span', {}, 'Words not found: ', el('b', { class: rep.words.missing ? 'st-bad' : '' }, String(rep.words.missing))),
       el('span', {}, 'Removed by options: ', el('b', {}, rep.words.excluded + ' words')),
-      r.kind === 'pdf' ? el('span', {}, 'Tables: ', el('b', {}, String(r.log.stats.tables))) : null),
+      r.kind === 'pdf' ? el('span', {}, 'Tables: ', el('b', {}, String(r.log.stats.tables))) : null,
+      r.kind === 'pdf' && rep.ocr && rep.ocr.pages ? el('span', {}, 'Scanned pages (OCR): ', el('b', {}, `${rep.ocr.pages} · confidence ${Math.round(rep.ocr.avgConf)}%`)) : null),
     c.total ? el('div', { class: 'review-summary' },
       el('span', { class: 'pill st-bad', hidden: !c.bad }, `${c.bad} missing / mismatched`),
       el('span', { class: 'pill st-warn', hidden: !c.warn }, `${c.warn} to check`),
@@ -576,6 +607,11 @@ async function reviewPane(r, toHtml, focus) {
           rect(b.x0, b.top, b.x1, b.bottom, i.status, focused);
           if (focused && focusTop == null) focusTop = b.top;
         }
+      } else if (h.kind === 'boxes' && h.page === p) {
+        for (const b of h.boxes || []) {
+          rect(b.x0, b.y0, b.x1, b.y1, i.status, focused);
+          if (focused && focusTop == null) focusTop = b.y0;
+        }
       } else if (h.kind === 'text' && h.page === p) {
         // outline only the text lines that best match the missing passage
         const want = new Set(h.words);
@@ -591,7 +627,10 @@ async function reviewPane(r, toHtml, focus) {
     if (focusTop != null) setTimeout(() => { left.scrollTop = Math.max(0, canvas.offsetTop + focusTop * scale / dpr - 80); }, 0);
   };
 
-  async function go(p) {
+  // page renders run one after another: two renders must never share the canvas
+  let queue = Promise.resolve();
+  const go = (p) => { queue = queue.then(() => draw1(p)).catch(() => {}); return queue; };
+  async function draw1(p) {
     p = Math.max(1, Math.min(pages, p || 1));
     input.value = p;
     pages = await renderPdfPage(r.buf, p, canvas, Math.min(900, left.clientWidth - 24 || 700), draw(p));
@@ -685,6 +724,19 @@ function init() {
   $('clear-btn').addEventListener('click', () => { state.files = []; renderFiles(); });
   $('zip-btn').addEventListener('click', downloadZip);
   $('clear-results-btn').addEventListener('click', clearResults);
+  $('opt-ocr').addEventListener('change', syncOcrOptions);
+  $('ocr-prep').addEventListener('click', async () => {
+    const st = $('ocr-prep-status'), btn = $('ocr-prep');
+    btn.disabled = true;
+    st.textContent = 'Downloading…';
+    try {
+      const m = await import('./lib/ocr.js');
+      await m.warmUpOcr((t) => { st.textContent = t; });
+      st.textContent = '✓ Ready. OCR now also works offline.';
+    } catch (e) {
+      st.textContent = 'Could not prepare OCR: ' + (e && e.message ? e.message : e);
+    } finally { btn.disabled = false; }
+  });
   $('viewer-close').addEventListener('click', () => $('viewer').close());
   setupDropzone();
   setMode('to');

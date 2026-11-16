@@ -371,13 +371,21 @@ export async function verifyConversion({ kind, buf, md, log, pages, opts = {}, c
     exMap.set(e.category, g);
   }
 
+  const ocrPages = kind === 'pdf' && log.ocr ? log.ocr.pages : [];
+  if (ocrPages.length) {
+    structure.push({ label: 'Scanned pages (OCR)', source: '—', output: ocrPages.length, ok: true, note: `Average confidence ${Math.round(ocrPages.reduce((s, o) => s + o.conf, 0) / ocrPages.length)}%. The text check compares the output with the OCR text itself, so it cannot measure OCR accuracy.` });
+    warnings.push(`${ocrPages.length} scanned page${ocrPages.length > 1 ? 's were' : ' was'} recognised by OCR (page${ocrPages.length > 1 ? 's' : ''} ${ocrPages.map(o => o.page).join(', ')}). OCR text can contain errors that no automatic check can detect. Review the numbers against the original pages.`);
+  }
   const structureOk = structure.every(s => s.ok) && tableChecks.every(t => t.ok);
   const missing = missingTokens.length;
   let verdict;
   if (missing === 0 && structureOk) verdict = 'complete';
   else if (num.missing.length === 0 && coverage >= 99.5) verdict = 'review';
   else verdict = 'incomplete';
-  if (verdict === 'complete' && ((kind === 'pdf' && warnings.some(w => /review/i.test(w))) || duplication)) verdict = 'review';
+  if (verdict === 'complete' && ((kind === 'pdf' && warnings.some(w => /review/i.test(w))) || duplication || ocrPages.length)) verdict = 'review';
+  // scanned pages that could not be read are missing from the output
+  if (kind === 'pdf' && warnings.some(w => /is a scanned image|OCR failed/.test(w))) verdict = 'incomplete';
+  else if (kind === 'pdf' && verdict === 'complete' && warnings.some(w => /no extractable text/.test(w))) verdict = 'review';
 
   const reviewItems = buildReviewItems({ kind, log, passages, structure, tableChecks, warnings, duplication });
 
@@ -394,6 +402,7 @@ export async function verifyConversion({ kind, buf, md, log, pages, opts = {}, c
     warnings,
     pagesWithLoss,
     reviewItems,
+    ocr: { pages: ocrPages.length, avgConf: ocrPages.length ? ocrPages.reduce((s, o) => s + o.conf, 0) / ocrPages.length : 0 },
   };
 }
 
@@ -437,15 +446,34 @@ function buildReviewItems({ kind, log, passages, structure, tableChecks, warning
       status: 'warn', page: t.page,
       location: pages.length > 1 ? `Pages ${pages[0]}–${pages[pages.length - 1]}` : `Page ${t.page}`,
       item: `Table ${t.docIndex} (${t.rows} rows × ${t.cols} columns${t.merged ? `, ${t.merged} merged cell${t.merged > 1 ? 's' : ''}` : ''})`,
-      reason: t.lowConfidence
-        ? 'Irregular border lines: some merged cells could not be resolved. Check the cell layout.'
-        : 'No border lines: structure rebuilt from the PDF tags. Check row/column alignment and merged cells.',
+      reason: t.ocr
+        ? 'Table recognised from a scanned page: the lines and cells were found in the image. Check every value and merged cell against the original page.'
+        : t.lowConfidence
+          ? 'Irregular border lines: some merged cells could not be resolved. Check the cell layout.'
+          : 'No border lines: structure rebuilt from the PDF tags. Check row/column alignment and merged cells.',
       highlight: { kind: 'table', page: t.page, indexOnPage: t.indexOnPage, docIndex: t.docIndex, boxes: t.boxes },
     });
   }
+  if (kind === 'pdf') {
+    for (const o of (log.ocr && log.ocr.pages) || []) {
+      const conf = Math.round(o.conf);
+      items.push({
+        status: conf < 70 ? 'bad' : 'warn', page: o.page, location: `Page ${o.page}`, item: 'Scanned page recognised by OCR',
+        reason: `Average confidence ${conf}% over ${o.words} words. OCR can misread characters (for example 0 and O, or 1 and l); check numbers, units and table cells against the original page.`,
+        highlight: { kind: 'page', page: o.page },
+      });
+      if (o.low.length) {
+        items.push({
+          status: 'warn', page: o.page, location: `Page ${o.page}`, item: `${o.low.length} word${o.low.length > 1 ? 's' : ''} read with low confidence`,
+          reason: `Below 70% confidence, for example ${o.low.slice(0, 4).map(w => `“${w.text}”`).join(', ')}. They are outlined on the page in the side-by-side review.`,
+          highlight: { kind: 'boxes', page: o.page, boxes: o.low.slice(0, 80) },
+        });
+      }
+    }
+  }
   for (const w of warnings) {
-    if (/were rebuilt from the PDF tags|irregular borders/.test(w)) continue; // listed per table above
-    const pm = /^Page (\d+) contains no extractable text/.exec(w);
+    if (/were rebuilt from the PDF tags|irregular borders|recognised by OCR \(page/.test(w)) continue; // listed per table / page above
+    const pm = /^Page (\d+) (contains no extractable text|is a scanned image|was recognised by OCR but)/.exec(w);
     items.push({
       status: pm ? 'bad' : 'warn', page: pm ? +pm[1] : null, location: pm ? `Page ${pm[1]}` : 'Whole document',
       item: duplication && /appear more often/.test(w) ? 'Possible duplication' : 'Warning', reason: w,
@@ -541,6 +569,6 @@ export function reportToMarkdown(rep, fileName, { checklist = true } = {}) {
   L.push(`## 5. Text not found in output\n\n` + (rep.passages.length ? rep.passages.map(p => `- ${MARK.bad} **${p.loc}:** ${p.text}`).join('\n') + (rep.passageCount > rep.passages.length ? `\n- … ${rep.passageCount - rep.passages.length} more` : '') : 'None.'));
   if (rep.pagesWithLoss.length) L.push(`### Pages with missing text\n\n` + rep.pagesWithLoss.map(p => `- ${MARK.bad} ${p.loc}: ${p.missing} of ${p.total} words`).join('\n'));
   L.push(`## 6. Warnings\n\n` + (rep.warnings.length ? rep.warnings.map(w => `- ${MARK.warn} ${w}`).join('\n') : 'None.'));
-  L.push(`## Limitations\n\nThe text check confirms that every word and number is *present* in the output. It does not fully prove that each value sits in the correct table cell. ${rep.kind === 'pdf' ? 'For PDF files, table structure is reconstructed from the page layout, so critical tables should be compared visually with the original (use the side-by-side review).' : 'For Word and Excel files, table positions are compared cell by cell against the source (section 3).'}`);
+  L.push(`## Limitations\n\nThe text check confirms that every word and number is *present* in the output. It does not fully prove that each value sits in the correct table cell.${rep.ocr && rep.ocr.pages ? ' On scanned pages the text was read by OCR; the check compares the output with the OCR text, so it cannot detect misread characters. Check numbers on scanned pages against the original.' : ''} ${rep.kind === 'pdf' ? 'For PDF files, table structure is reconstructed from the page layout, so critical tables should be compared visually with the original (use the side-by-side review).' : 'For Word and Excel files, table positions are compared cell by cell against the source (section 3).'}`);
   return L.join('\n\n') + '\n';
 }

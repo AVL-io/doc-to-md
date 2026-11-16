@@ -40,12 +40,22 @@ for (const f of ['index.html', 'styles.css', 'manifest.webmanifest']) fs.copyFil
 fs.cpSync(path.join(src, 'icons'), path.join(dist, 'icons'), { recursive: true });
 fs.copyFileSync(workerSrc, path.join(dist, 'pdf.worker.min.mjs'));
 
+// OCR engine (English): copied next to the app and downloaded only when OCR is first used
+const ocrOut = path.join(dist, 'ocr');
+fs.mkdirSync(path.join(ocrOut, 'core'), { recursive: true });
+fs.mkdirSync(path.join(ocrOut, 'lang'), { recursive: true });
+fs.copyFileSync(path.join(root, 'node_modules/tesseract.js/dist/worker.min.js'), path.join(ocrOut, 'worker.min.js'));
+for (const f of ['tesseract-core-relaxedsimd-lstm.wasm.js', 'tesseract-core-simd-lstm.wasm.js', 'tesseract-core-lstm.wasm.js']) {
+  fs.copyFileSync(path.join(root, 'node_modules/tesseract.js-core', f), path.join(ocrOut, 'core', f));
+}
+fs.copyFileSync(path.join(root, 'node_modules/@tesseract.js-data/eng/4.0.0_best_int/eng.traineddata.gz'), path.join(ocrOut, 'lang/eng.traineddata.gz'));
+
 const files = [];
 const walk = (d) => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f); if (fs.statSync(p).isDirectory()) walk(p); else files.push(path.relative(dist, p).split(path.sep).join('/')); } };
 walk(dist);
-const precache = ['./', ...files.filter(f => f !== 'index.html')];
+const precache = ['./', ...files.filter(f => f !== 'index.html' && !f.startsWith('ocr/'))];
 const hash = crypto.createHash('sha256');
-for (const f of files.sort()) hash.update(f).update(fs.readFileSync(path.join(dist, f)));
+for (const f of files.filter(x => !x.startsWith('ocr/')).sort()) hash.update(f).update(fs.readFileSync(path.join(dist, f)));
 const cacheVersion = hash.digest('hex').slice(0, 12);
 fs.writeFileSync(path.join(dist, 'sw.js'), fs.readFileSync(path.join(src, 'sw.js'), 'utf8')
   .replace('__VERSION__', cacheVersion)

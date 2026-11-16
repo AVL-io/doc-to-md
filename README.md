@@ -46,7 +46,22 @@ Assessment (EIA) reports, whose Markdown output is intended for AI tools.
   figures and header/footer marks. Tables without borders are rebuilt from those
   tags. Tables that continue across pages are joined, with the repeated header
   row removed. Optional page markers (`<!-- Page 5 -->`) support traceability.
-  Scanned (image-only) PDFs are not supported.
+- **Scanned pages (OCR, English).** Pages that are only an image are found
+  automatically (almost no text, and an image covering most of the page) and
+  their text is recognised on the computer with Tesseract. Digital pages in the
+  same file are read as usual. Headings, lists, header/footer removal and tables
+  work as for digital PDFs: table borders are found in the page image, so merged
+  cells are recovered. OCR takes a few seconds per page (high quality, 300 dpi,
+  is the default; 200 dpi is faster). A **Cancel** button stops a long run.
+  - OCR text can contain errors, such as 0 and O or 1 and l, which no automatic
+    check can detect. Scanned pages are therefore never reported as "Complete":
+    the report asks for review, lists each OCR page with its confidence, and
+    outlines low-confidence words on the original page in the side-by-side review.
+  - Not supported: rotated pages, handwriting, other languages, and badly skewed
+    scans (tables may then be read as plain text).
+  - The OCR files (about 7 MB) are downloaded the first time they are needed and
+    then kept for offline use; **Download OCR files now** (in the options) does
+    this in advance. OCR is not available in the single-file offline copy.
 
 ### Removal before conversion
 
@@ -178,7 +193,9 @@ npm test
 ```
 
 `npm test` builds the app, then converts every test file in a headless browser
-with the real security policy. It writes the results to `test-output/`.
+with the real security policy. It writes the results to `test-output/`. Separate
+scripts test the Markdown reader (`tests/run-reader-tests.mjs`) and scanned pages
+with OCR, including offline use (`tests/run-ocr-tests.mjs`).
 
 - `tests/fixtures/` contains synthetic test documents created by
   `tests/make-fixtures.py`. They hold no real data, so they can be committed.
@@ -196,6 +213,7 @@ with the real security policy. It writes the results to `test-output/`.
 | `src/reader.js`, `src/lib/md-checks.js`, `src/lib/model-html.js`, `src/lib/preview.js` | Markdown reader (editor, checks, Word/PDF/Excel/Web previews) |
 | `src/sw.js`, `src/manifest.webmanifest`, `src/icons/` | PWA (offline cache, install) |
 | `src/lib/docx-reader.js`, `xlsx-reader.js`, `pdf-reader.js` | Readers that build the shared document model (`ast.js`) |
+| `src/lib/ocr.js`, `src/lib/scan.js` | Local OCR (Tesseract.js workers) and page-image analysis (table lines) |
 | `src/lib/md-writer.js` | Document model → Markdown |
 | `src/lib/md-reader.js`, `docx-writer.js`, `xlsx-writer.js`, `pdf-writer.js`, `html-writer.js` | Markdown → Word / Excel / PDF / HTML |
 | `src/lib/verify.js` | Independent inventory and verification report |
@@ -219,3 +237,5 @@ internet at run time.
 | [docx](https://github.com/dolanmiu/docx) | Writing Word files | MIT |
 | [marked](https://github.com/markedjs/marked) | Reading Markdown | MIT |
 | [pdfmake](https://github.com/bpampuch/pdfmake) (with Roboto font) | Writing PDF files | MIT (font: Apache-2.0) |
+| [Tesseract.js](https://github.com/naptha/tesseract.js) and `tesseract.js-core` | OCR engine in the browser (WebAssembly) | Apache-2.0 |
+| `@tesseract.js-data/eng` (English model, `4.0.0_best_int`) | OCR language data | MIT (package); the underlying Tesseract model files are published under Apache-2.0 |

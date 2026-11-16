@@ -72,6 +72,7 @@
     <div class="progress" id="progress" hidden>
       <div class="bar"><span id="progress-bar"></span></div>
       <p id="progress-text"></p>
+      <button class="btn small ghost" id="cancel-btn" hidden>Cancel</button>
     </div>
 
     <section class="results" id="results" hidden>
@@ -139,6 +140,13 @@
     <fieldset data-only="pdf">
       <legend>PDF</legend>
       <label><input type="checkbox" name="pageMarkers"> Insert page markers (<code>&lt;!-- Page 5 --&gt;</code>) for traceability</label>
+      <label><input type="checkbox" name="ocr" id="opt-ocr"> Recognise text on scanned pages (OCR, English)</label>
+      <div class="sub-opts" id="ocr-opts">
+        <label><input type="radio" name="ocrDpi" value="300"> High quality (300 dpi): best for small print and numbers</label>
+        <label><input type="radio" name="ocrDpi" value="200"> Standard (200 dpi): faster</label>
+        <p class="muted small" id="ocr-note">Scanned pages are found automatically. Text is recognised on this computer; nothing is uploaded. The first use downloads the OCR files (about 7 MB), which are then kept for offline use.</p>
+        <p><button type="button" class="btn small" id="ocr-prep">Download OCR files now</button> <span class="muted small" id="ocr-prep-status"></span></p>
+      </div>
     </fieldset>
 
     <fieldset>

@@ -128,3 +128,46 @@ subprocess.run(["soffice", "--headless", "--convert-to", untagged, "--outdir", t
 os.replace(os.path.join(tmp, "synthetic-report.pdf"), os.path.join(OUT, "synthetic-report-untagged.pdf"))
 os.rmdir(tmp)
 print("fixtures written to", OUT)
+
+# ---- scanned documents (image-only PDFs, no text layer) --------------------------------------
+# Pages of the synthetic report are rendered to images and wrapped in new PDFs, so that the
+# text can only be read by OCR.
+import glob
+import shutil
+import tempfile
+from PIL import Image, ImageFilter
+import random
+
+def render_pages(pdf, dpi=200):
+    tmp = tempfile.mkdtemp()
+    subprocess.run(["pdftoppm", "-r", str(dpi), "-gray", "-png", pdf, os.path.join(tmp, "p")], check=True)
+    return tmp, sorted(glob.glob(os.path.join(tmp, "p-*.png")))
+
+def images_to_pdf(images, out, dpi=200):
+    first, rest = images[0], images[1:]
+    first.save(out, "PDF", resolution=dpi, save_all=True, append_images=rest)
+
+src_pdf = os.path.join(OUT, "synthetic-report-untagged.pdf")
+tmp, pngs = render_pages(src_pdf)
+clean = [Image.open(p).convert("L") for p in pngs]
+images_to_pdf(clean, os.path.join(OUT, "synthetic-scan.pdf"))
+
+# scanner-like version: slight rotation, noise and blur
+random.seed(7)
+noisy = []
+for im in clean:
+    im2 = im.rotate(0.35, resample=Image.BICUBIC, fillcolor=255).filter(ImageFilter.GaussianBlur(0.6))
+    px = im2.load()
+    for _ in range(im2.width * im2.height // 400):
+        x, y = random.randrange(im2.width), random.randrange(im2.height)
+        px[x, y] = random.choice([0, 60, 200])
+    noisy.append(im2)
+images_to_pdf(noisy, os.path.join(OUT, "synthetic-scan-skewed.pdf"))
+
+# mixed document: page 1 digital text, page 2 scanned
+sep = tempfile.mkdtemp()
+subprocess.run(["pdfseparate", "-f", "1", "-l", "1", src_pdf, os.path.join(sep, "d%d.pdf")], check=True)
+images_to_pdf([Image.open(pngs[1]).convert("L")], os.path.join(sep, "s2.pdf"))   # fresh copy: PIL keeps save state on the image
+subprocess.run(["pdfunite", os.path.join(sep, "d1.pdf"), os.path.join(sep, "s2.pdf"), os.path.join(OUT, "synthetic-mixed.pdf")], check=True)
+shutil.rmtree(tmp); shutil.rmtree(sep)
+print("scanned fixtures written")

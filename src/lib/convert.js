@@ -14,6 +14,8 @@ export const DEFAULT_OPTIONS = {
   removeToc: true,
   removeCover: false,
   pageMarkers: true,
+  ocr: true,
+  ocrDpi: 300,
   includeHiddenSheets: false,
   includeHiddenRowsCols: false,
 };
@@ -52,7 +54,7 @@ export async function convertToMarkdown(file, options, onProgress = () => {}) {
   onProgress({ stage: 'reading' });
   if (kind === 'docx') res = await (await import('./docx-reader.js')).readDocx(buf, opts);
   else if (kind === 'xlsx') res = await (await import('./xlsx-reader.js')).readXlsx(buf, opts);
-  else res = await (await import('./pdf-reader.js')).readPdf(buf, opts, (i, n) => onProgress({ stage: 'page', page: i, pages: n }));
+  else res = await (await import('./pdf-reader.js')).readPdf(buf, opts, (i, n, info) => onProgress({ stage: 'page', page: i, pages: n, ...(info || {}) }));
   onProgress({ stage: 'writing' });
   const { toMarkdown } = await import('./md-writer.js');
   const md = toMarkdown(res.doc, { tableMode: opts.tableMode, sourceName: file.name });

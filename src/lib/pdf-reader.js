@@ -4,6 +4,7 @@
 // "Save as PDF") additionally provide headings, lists and header/footer marks.
 import * as pdfjs from 'pdfjs-dist/build/pdf.mjs';
 import { buildLists, mergeInlines, trimInlines, inlinesText, blocksText } from './ast.js';
+import { analyseScan, ocrSupported } from './scan.js';
 
 export const DEFAULT_OPTIONS = {
   removeImages: true,
@@ -12,7 +13,11 @@ export const DEFAULT_OPTIONS = {
   removeFootnotes: false,
   removeToc: true,
   pageMarkers: true,
+  ocr: true,        // recognise text on scanned pages (local OCR, English)
+  ocrDpi: 300,      // resolution used for OCR: 200 (standard) or 300 (high)
 };
+
+const abortError = () => { const e = new Error('The conversion was cancelled.'); e.name = 'AbortError'; return e; };
 
 export function setPdfWorkerSrc(src) {
   pdfjs.GlobalWorkerOptions.workerSrc = src;
@@ -44,15 +49,35 @@ export async function readPdf(buf, options = {}, onProgress = () => {}) {
   const log = { excluded: [], warnings: [], stats: { pages: n, tables: 0, cells: 0, mergedCells: 0, images: 0, tagged: false, lowConfidenceTables: [] } };
   const exclude = (category, text, page) => log.excluded.push({ category, text: (text || '').trim(), page });
 
-  // ---------- pass 1: extract every page ----------
+  // ---------- pass 1: extract every page (scanned pages are recognised by OCR) ----------
   const pages = [];
-  for (let i = 1; i <= n; i++) {
-    onProgress(i, n);
-    const page = await pdf.getPage(i);
-    pages.push(await extractPage(page, i, log));
-    page.cleanup();
+  const env = { opts, log, n, onProgress, signal: opts.signal, tasks: [], engine: null, ocrTotal: 0, ocrDone: 0, ocrReady: false };
+  log.ocr = { pages: [], dpi: opts.ocrDpi, engine: 'Tesseract (LSTM, English)' };
+  try {
+    env.ocrReady = !!opts.ocr && ocrSupported();
+    for (let i = 1; i <= n; i++) {
+      if (opts.signal && opts.signal.aborted) throw abortError();
+      onProgress(i, n);
+      const page = await pdf.getPage(i);
+      const p = await extractPage(page, i, log, env);
+      pages.push(p);
+      if (!p.ocrTask) page.cleanup();
+    }
+    if (env.tasks.length) {
+      const results = await Promise.allSettled(env.tasks);
+      const aborted = results.find(r => r.status === 'rejected' && r.reason && r.reason.name === 'AbortError');
+      if (aborted) throw aborted.reason;
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError' && env.engine) { const m = await import('./ocr.js'); await m.abortOcr(); env.engine = null; }
+    await pdf.destroy().catch(() => {});
+    throw e;
+  } finally {
+    if (env.engine) { const m = await import('./ocr.js'); m.releaseOcr(); }
   }
   await pdf.destroy();
+  log.ocr.pages.sort((a, b) => a.page - b.page);
+  log.stats.ocrPages = log.ocr.pages.length;
   log.stats.tagged = pages.some(p => p.tagged);
 
   // ---------- pass 2: document-wide statistics ----------
@@ -74,7 +99,11 @@ export async function readPdf(buf, options = {}, onProgress = () => {}) {
   for (const p of pages) {
     if (opts.pageMarkers) blocks.push({ type: 'pagebreak', page: p.num });
     if (!p.lines.length && !p.tables.length) {
-      if (!p.hasText) log.warnings.push(`Page ${p.num} contains no extractable text. It may be a scanned image; scanned pages are not supported.`);
+      if (p.ocrError) log.warnings.push(`Page ${p.num} is a scanned image, but OCR failed: ${p.ocrError}`);
+      else if (p.scanned && !p.ocr && !ocrSupported()) log.warnings.push(`Page ${p.num} is a scanned image, but OCR is not available in this copy of the app. Use the installed app or the web address to convert scanned pages.`);
+      else if (p.scanned && !p.ocr) log.warnings.push(`Page ${p.num} is a scanned image and was skipped because OCR is switched off. Switch OCR on in the options to convert it.`);
+      else if (p.ocr) log.warnings.push(`Page ${p.num} was recognised by OCR but no text was found on it.`);
+      else if (!p.hasText && !p.blank) log.warnings.push(`Page ${p.num} contains no extractable text (it holds only drawings or images).`);
     }
     const units = groupParagraphs(p, { bodySize, repeated, opts, log, exclude, hasHeadingTags, headingSizes });
     blocks.push(...units);
@@ -97,18 +126,18 @@ export async function readPdf(buf, options = {}, onProgress = () => {}) {
       docIndex, indexOnPage, page: m.page,
       rows: b.rows.length, cols: m.nCols,
       merged: b.rows.reduce((s, r) => s + r.filter(c => (c.rowspan || 1) > 1 || (c.colspan || 1) > 1).length, 0),
-      inferred: !!m.inferred, lowConfidence: !!m.lowConfidence,
+      inferred: !!m.inferred, lowConfidence: !!m.lowConfidence, ocr: !!m.ocr,
       boxes: [box(m), ...(m.parts || []).map(box)],
     });
   }
-  return { doc, log, pages: pages.map(p => ({ num: p.num, rawText: p.rawText, items: p.items, width: p.width, height: p.height })) };
+  return { doc, log, pages: pages.map(p => ({ num: p.num, rawText: p.rawText, items: p.items, width: p.width, height: p.height, ocr: p.ocr || null })) };
 }
 
 // ======================================================================
 // Pass 1: page extraction
 // ======================================================================
 
-async function extractPage(page, num, log) {
+async function extractPage(page, num, log, env) {
   const vp = page.getViewport({ scale: 1 });
   const [tc, ops, st] = await Promise.all([
     page.getTextContent({ includeMarkedContent: true }),
@@ -194,11 +223,26 @@ async function extractPage(page, num, log) {
   }
 
   // ---- ruling lines ----
+  // ---- scanned page? (almost no text, and an image that covers most of the page) ----
+  const textChars = frags.reduce((s, f) => s + (f.str ? f.str.replace(/\s/g, '').length : 0), 0);
+  const coverage = imageCoverage(ops, width * height);
+  if (textChars < 25 && coverage >= 0.6) {
+    const p = { num, width, height, lines: [], tables: [], tagged: false, scanned: true, rawText: '', items: [], hasText: false };
+    if (env && env.opts.ocr && env.ocrReady) { p.ocrTask = runOcr(page, p, env); env.tasks.push(p.ocrTask); }
+    return p;
+  }
+
   const rules = extractRules(ops, vp.transform);
   let images = 0;
   for (const fn of ops.fnArray) if (fn === pdfjs.OPS.paintImageXObject || fn === pdfjs.OPS.paintInlineImageXObject || fn === pdfjs.OPS.paintImageMaskXObject) images++;
   log.stats.images += Math.max(images, figures.length);
+  const p = assemblePage({ num, width, height, frags, rules, log, tagged, rawText, items });
+  p.blank = !p.hasText && ops.fnArray.length < 12;
+  return p;
+}
 
+/** Tables, reading order and lines of one page (used for digital pages and for OCR pages). */
+function assemblePage({ num, width, height, frags, rules, log, tagged, rawText, items }) {
   // ---- tables from ruling lines ----
   const tables = detectTables(rules, frags.filter(f => !f.figure && !f.artifact), num, log);
   tables.push(...structTables(frags.filter(f => !f.figure && !f.artifact && f.tableId == null && chainHas(f.chain, 'Table')), num, log));
@@ -209,6 +253,108 @@ async function extractPage(page, num, log) {
   const lines = buildLines(frags.filter(f => f.figure || f.tableId == null));
 
   return { num, width, height, lines, tables, tagged, rawText, items, hasText: frags.some(f => !f.figure) };
+}
+
+/** Share of the page covered by images (sum of their areas, at most 1). */
+function imageCoverage(ops, pageArea) {
+  const OPS = pdfjs.OPS;
+  const imgOps = new Set([OPS.paintImageXObject, OPS.paintInlineImageXObject, OPS.paintImageMaskXObject, OPS.paintImageXObjectRepeat, OPS.paintJpegXObject].filter(Boolean));
+  let ctm = [1, 0, 0, 1, 0, 0];
+  const stack = [];
+  let area = 0;
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i], args = ops.argsArray[i];
+    if (fn === OPS.save) stack.push(ctm);
+    else if (fn === OPS.restore) ctm = stack.pop() || ctm;
+    else if (fn === OPS.transform) ctm = mul(ctm, args);
+    else if (fn === OPS.paintFormXObjectBegin) { stack.push(ctm); if (args && args[0]) ctm = mul(ctm, args[0]); }
+    else if (fn === OPS.paintFormXObjectEnd) ctm = stack.pop() || ctm;
+    else if (imgOps.has(fn)) area += Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2]);
+  }
+  return Math.min(1, area / Math.max(1, pageArea));
+}
+
+// ---------------------------------------------------------------- OCR of scanned pages
+
+async function runOcr(page, p, env) {
+  const { opts, log } = env;
+  env.ocrTotal++;
+  const report = () => env.onProgress(env.n, env.n, { ocr: { done: env.ocrDone, total: env.ocrTotal } });
+  try {
+    const mod = await import('./ocr.js');
+    if (!env.engine) env.engine = mod.acquireOcr({ dpi: opts.ocrDpi, onStatus: (t) => env.onProgress(env.n, env.n, { note: t }) });
+    const engine = await env.engine;
+    const abort = opts.signal ? new Promise((_, rej) => { if (opts.signal.aborted) rej(abortError()); opts.signal.addEventListener('abort', () => rej(abortError())); }) : null;
+    const job = engine.run(async (worker) => {
+      if (opts.signal && opts.signal.aborted) throw abortError();
+      const scale = Math.min(opts.ocrDpi / 72, 5000 / Math.max(p.width, p.height));
+      const vp = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(vp.width); canvas.height = Math.round(vp.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const scan = analyseScan(canvas, scale);
+      const res = await mod.recogniseCanvas(worker, canvas);
+      canvas.width = 0; canvas.height = 0;
+      return { res, scan, scale };
+    });
+    const rec = await (abort ? Promise.race([job, abort]) : job);
+    buildOcrPage(p, rec, log);
+  } catch (e) {
+    if (e && e.name === 'AbortError') throw e;
+    p.ocrError = e && e.message ? e.message : String(e);
+  } finally {
+    try { page.cleanup(); } catch { /* page already released */ }
+    env.ocrDone++;
+    report();
+  }
+}
+
+/** Turn the OCR result of a page into text fragments, rules and the usual page structure. */
+function buildOcrPage(p, rec, log) {
+  const { res, scan, scale } = rec;
+  const lines = res.lines.filter(l => l.words.length);
+  // font size from Tesseract's row height, steadied by grouping lines of similar height
+  const rowH = (l) => (l.row && l.row.rowHeight > 0 ? l.row.rowHeight : (l.bbox.y1 - l.bbox.y0) * 1.1);
+  const hs = lines.map(rowH).sort((a, b) => a - b);
+  const groups = [];
+  for (const h of hs) { const g = groups[groups.length - 1]; if (g && h <= g[0] * 1.08) g.push(h); else groups.push([h]); }
+  const groupMedian = (h) => { const g = groups.find(x => h >= x[0] && h <= x[x.length - 1]) || [h]; return g[(g.length - 1) >> 1]; };
+  // stroke width relative to line height: heavier than the page norm hints at a bold heading
+  const stroke = lines.map(l => scan.stroke(l.bbox.x0, l.bbox.y0, l.bbox.x1, l.bbox.y1) / rowH(l));
+  const sortedStroke = [...stroke].sort((a, b) => a - b);
+  const medStroke = sortedStroke.length ? sortedStroke[sortedStroke.length >> 1] : 0;
+  const HEADING_RE = /^(\d+(\.\d+)*\.?|[A-Z]\.|appendix|annex|section|chapter|part)\s+\S/i;
+  const BULLET_NOISE = /^[®©«»°¢•·●○◦▪■□]$/;
+
+  const frags = [], items = [], low = [];
+  let order = 0, raw = '', sumConf = 0, nWords = 0;
+  lines.forEach((l, li) => {
+    const lh = l.bbox.y1 - l.bbox.y0;
+    const size = Math.max(4, 0.73 * groupMedian(rowH(l)) / scale);
+    const words = l.words.map((w, wi) => (wi === 0 && BULLET_NOISE.test(w.text) && l.words.length > 1 ? { ...w, text: '•' } : w));
+    const text = words.map(w => w.text).join(' ');
+    const bold = medStroke > 0 && stroke[li] >= medStroke * 1.12 && HEADING_RE.test(text) && text.length <= 100;
+    const b = l.baseline;
+    const hasBase = b && b.has_baseline !== false && b.x1 > b.x0;
+    raw += text + '\n';
+    for (const w of words) {
+      const xc = (w.x0 + w.x1) / 2;
+      const yPx = hasBase ? b.y0 + (xc - b.x0) * (b.y1 - b.y0) / (b.x1 - b.x0) : w.y1 - 0.18 * lh;
+      const x = w.x0 / scale, y = yPx / scale, wd = (w.x1 - w.x0) / scale;
+      frags.push({ str: w.text, x, y, w: wd, size, rotated: false, bold, italic: false, mono: false, artifact: false, chain: null, eol: false, order: order++, spaceAfter: true, conf: w.conf });
+      items.push({ s: w.text, x, y, w: wd, h: size });
+      sumConf += w.conf; nWords++;
+      if (w.conf < 70 && /[\p{L}\p{N}]/u.test(w.text)) low.push({ text: w.text, conf: Math.round(w.conf), x0: w.x0 / scale, y0: w.y0 / scale, x1: w.x1 / scale, y1: w.y1 / scale });
+    }
+  });
+  const page = assemblePage({ num: p.num, width: p.width, height: p.height, frags, rules: mergeRules(scan.rules), log, tagged: false, rawText: raw, items });
+  for (const t of page.tables) { t.block.meta.inferred = true; t.block.meta.ocr = true; }
+  Object.assign(p, page, { scanned: true });
+  const info = { page: p.num, words: nWords, conf: nWords ? sumConf / nWords : 0, low, tables: page.tables.length };
+  p.ocr = info;
+  log.ocr.pages.push(info);
 }
 
 const PUA_BULLETS = { '\uF0B7': '•', '\uF0A7': '▪', '\uF0D8': '➢', '\uF076': '❖', '\uF0FC': '✓', '\uF06E': '■', '\uF0A8': '□', '\uF0E0': '→' };

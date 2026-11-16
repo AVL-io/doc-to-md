@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node build.mjs",
     "serve": "node tools/serve.mjs dist 8080",
-    "test": "node build.mjs && node tests/run-tests.mjs && node tests/run-reader-tests.mjs"
+    "test": "node build.mjs && node tests/run-tests.mjs && node tests/run-reader-tests.mjs && node tests/run-ocr-tests.mjs"
   },
   "devDependencies": {
     "docx": "9.5.1",
@@ -16,5 +16,10 @@
     "marked": "15.0.12",
     "pdfjs-dist": "4.10.38",
     "pdfmake": "0.2.20"
+  },
+  "dependencies": {
+    "@tesseract.js-data/eng": "1.0.0",
+    "tesseract.js": "7.0.0",
+    "tesseract.js-core": "7.0.0"
   }
 }
