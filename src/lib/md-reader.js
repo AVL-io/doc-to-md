@@ -5,13 +5,16 @@ import { mergeInlines, trimInlines } from './ast.js';
 export function readMarkdown(md) {
   const tokens = marked.lexer(md, { gfm: true });
   const footnotes = [];
-  const blocks = convertBlocks(tokens, footnotes);
+  const blocks = convertBlocks(tokens, footnotes, true);
   return { blocks, footnotes };
 }
 
-function convertBlocks(tokens, footnotes) {
+/** top: record the source line range (line / endLine, 1-based) of every top-level block. */
+function convertBlocks(tokens, footnotes, top = false) {
   const out = [];
+  let lineNo = 1;
   for (const t of tokens) {
+    const before = out.length, fnBefore = footnotes.length, ln = lineNo;
     switch (t.type) {
       case 'heading':
         out.push({ type: 'heading', level: t.depth, inlines: trimInlines(convertInlines(t.tokens)) });
@@ -52,7 +55,28 @@ function convertBlocks(tokens, footnotes) {
       default:
         break;
     }
+    if (top) {
+      const raw = t.raw || '';
+      const body = raw.replace(/\n+$/, '');
+      const end = ln + (body ? body.split('\n').length - 1 : 0);
+      for (let i = before; i < out.length; i++) { out[i].line = ln; out[i].endLine = end; }
+      for (let j = fnBefore; j < footnotes.length; j++) footnotes[j].line = ln;
+      lineNo += (raw.match(/\n/g) || []).length;
+    }
   }
+  return out;
+}
+
+/** "[^id]" in text becomes a footnote reference. */
+function withFootnoteRefs(text, fmt) {
+  const out = [];
+  let last = 0;
+  for (const m of text.matchAll(/\[\^([^\]\s]+)\]/g)) {
+    if (m.index > last) out.push({ type: 'text', text: text.slice(last, m.index), ...fmt });
+    out.push({ type: 'footref', id: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length || !out.length) out.push({ type: 'text', text: text.slice(last), ...fmt });
   return out;
 }
 
@@ -83,7 +107,7 @@ function convertInlines(tokens, baseFmt = {}) {
     switch (t.type) {
       case 'text':
         if (t.tokens && t.tokens.length) out.push(...convertInlines(t.tokens, fmt));
-        else out.push({ type: 'text', text: decodeEntities(t.text), ...fmt });
+        else out.push(...withFootnoteRefs(decodeEntities(t.text), fmt));
         break;
       case 'escape': out.push({ type: 'text', text: t.text, ...fmt }); break;
       case 'strong': out.push(...convertInlines(t.tokens, { ...fmt, bold: true })); break;

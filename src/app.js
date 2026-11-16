@@ -1,6 +1,7 @@
 // User interface.
 import { convertToMarkdown, convertFromMarkdown, DEFAULT_OPTIONS, TO_MD_EXT, FROM_MD_EXT, extOf, mdName } from './lib/convert.js';
 import { setPdfWorkerSrc } from './lib/pdf-reader.js';
+import { el, download, mdBlob, sleep } from './lib/util.js';
 
 const VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'dev';
 const $ = (id) => document.getElementById(id);
@@ -29,28 +30,6 @@ function fmtSize(n) {
   if (n < 1048576) return (n / 1024).toFixed(0) + ' KB';
   return (n / 1048576).toFixed(1) + ' MB';
 }
-function el(tag, attrs = {}, ...children) {
-  const e = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
-    if (k === 'class') e.className = v;
-    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
-    else if (v === true) e.setAttribute(k, '');
-    else if (v !== false && v != null) e.setAttribute(k, v);
-  }
-  for (const c of children.flat()) if (c != null) e.append(c);
-  return e;
-}
-function download(blob, name) {
-  const url = URL.createObjectURL(blob);
-  const a = el('a', { href: url, download: name });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
-}
-const mdBlob = (text) => new Blob([text], { type: 'text/markdown;charset=utf-8' });
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 // ------------------------------------------------------------ mode / tabs
 function setMode(mode) {
   state.mode = mode;
@@ -140,12 +119,19 @@ function renderFiles() {
     badge.title = n ? `${plural(n, 'file')} waiting` : '';
   }
   const ul = $('file-list');
-  ul.replaceChildren(...state.files.map((f, i) => el('li', {},
-    el('span', { class: 'type-tag' }, extOf(f.name)),
-    el('span', { class: 'name', title: f.name }, f.name),
-    el('span', { class: 'meta' }, fmtSize(f.size)),
-    el('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${f.name}`, onclick: () => { state.files.splice(i, 1); renderFiles(); } }, '✕'),
-  )));
+  ul.replaceChildren(...state.files.map((f, i) => {
+    const readable = state.mode === 'from';
+    return el('li', {},
+      el('span', { class: 'type-tag' }, extOf(f.name)),
+      readable
+        ? el('button', { class: 'name link', title: `Read ${f.name}`, onclick: () => openQueueReader(i) }, f.name)
+        : el('span', { class: 'name', title: f.name }, f.name),
+      f.edited ? el('span', { class: 'pill-n edited', title: 'Edited in the reader. The edited text is used for conversion.' }, 'Edited') : null,
+      el('span', { class: 'meta' }, fmtSize(f.size)),
+      readable ? el('button', { class: 'btn small read-btn', onclick: () => openQueueReader(i) }, '👁 Read') : null,
+      el('button', { class: 'icon-btn', title: 'Remove', 'aria-label': `Remove ${f.name}`, onclick: () => { state.files.splice(i, 1); renderFiles(); } }, '✕'),
+    );
+  }));
   $('convert-btn').disabled = !state.files.length;
   $('clear-btn').hidden = !state.files.length;
 }
@@ -257,6 +243,63 @@ async function runFromMarkdown() {
   renderFiles();
 }
 
+// ------------------------------------------------------------ reader
+const readerFormats = () => [...document.querySelectorAll('input[name="fmt"]:checked')].map(i => i.value);
+
+async function createFromReader(name, text, formats) {
+  const file = new File([text], name);
+  try {
+    const outputs = await convertFromMarkdown(file, formats);
+    for (const o of outputs) { download(o.blob, o.name); await sleep(350); }
+    state.results.from.unshift({ file, ok: true, outputs, kind: 'md' });
+    renderResults();
+    notify('info', `${plural(outputs.length, 'document')} created`, outputs.map(o => o.name).join(', '));
+  } catch (e) {
+    console.error(e);
+    notify('warn', 'The documents could not be created', e && e.message ? e.message : String(e));
+  }
+}
+
+async function openQueueReader(i) {
+  const q = state.queues.from;
+  const f = q[i];
+  if (!f) return;
+  const text = await f.text();
+  const base = f.original || f;
+  const original = f.original ? await f.original.text() : text;
+  const { openReader } = await import('./reader.js');
+  openReader({
+    name: base.name, text, original,
+    nav: { index: i, total: q.length, go: (d) => { const n = i + d; if (n >= 0 && n < q.length) openQueueReader(n); } },
+    formats: readerFormats,
+    notify,
+    create: (formats, t) => createFromReader(base.name, t, formats),
+    onEdit: (t, reverted) => {
+      const cur = state.queues.from.findIndex(x => (x.original || x) === base);
+      if (cur < 0) return;
+      if (reverted) state.queues.from[cur] = base;
+      else {
+        const nf = new File([t], base.name, { lastModified: base.lastModified });
+        nf.original = base; nf.edited = true;
+        state.queues.from[cur] = nf;
+      }
+      renderFiles();
+    },
+  });
+}
+
+async function openResultReader(r) {
+  const { openReader } = await import('./reader.js');
+  if (r.mdOriginal == null) r.mdOriginal = r.md;
+  openReader({
+    name: r.outName, text: r.md, original: r.mdOriginal,
+    formats: readerFormats,
+    notify,
+    create: (formats, t) => createFromReader(r.outName, t, formats),
+    onEdit: (t) => { r.md = t; r.edited = t !== r.mdOriginal; renderResults(); },
+  });
+}
+
 // ------------------------------------------------------------ results
 const VERDICT_LABEL = { complete: 'Complete', review: 'Review recommended', incomplete: 'Incomplete' };
 
@@ -318,6 +361,7 @@ function resultCard(r) {
   return el('li', { class: 'result' },
     el('div', { class: 'result-top' },
       el('span', { class: 'name' }, `${r.file.name} → ${r.outName}`),
+      r.edited ? el('span', { class: 'pill-n edited', title: 'The Markdown was edited after the verification report was created. The report describes the original conversion.' }, 'Markdown edited') : null,
       el('span', { class: `verdict ${rep.verdict}` }, VERDICT_LABEL[rep.verdict])),
     el('div', { class: 'stats' },
       el('span', {}, 'Text coverage: ', el('b', {}, rep.words.coverage.toFixed(2) + '%')),
@@ -332,6 +376,7 @@ function resultCard(r) {
       : el('div', { class: 'review-summary' }, el('span', { class: 'pill st-ok' }, 'Nothing requires review')),
     el('div', { class: 'result-actions' },
       el('button', { class: 'btn small primary', onclick: () => download(mdBlob(r.md), r.outName) }, 'Download .md'),
+      el('button', { class: 'btn small read-btn', onclick: () => openResultReader(r) }, '👁 Read the .md'),
       el('button', { class: 'btn small', onclick: () => openViewer(r, 'report') }, c.total ? `Review checklist (${c.total})` : 'Verification report'),
       el('button', { class: 'btn small', onclick: () => openViewer(r, 'review') }, 'Side-by-side review'),
       el('button', { class: 'btn small', onclick: () => download(mdBlob(r.reportMd), r.outName.replace(/\.md$/, '.verification.md')) }, 'Download report')));
@@ -654,7 +699,7 @@ function init() {
     });
   }
   // test hook (used by the automated browser tests)
-  window.__docToMd = { convertToMarkdown, convertFromMarkdown, state };
+  window.__docToMd = { convertToMarkdown, convertFromMarkdown, state, analyze: async (t) => (await import('./lib/md-checks.js')).analyzeMarkdown(t) };
 }
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();

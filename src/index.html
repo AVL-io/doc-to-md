@@ -154,6 +154,61 @@
   </form>
 </dialog>
 
+<!-- Markdown reader -->
+<dialog id="reader" class="reader" aria-label="Markdown reader">
+  <div class="rd-top">
+    <button class="btn small" id="rd-back" title="Close the reader">← Back to list</button>
+    <div class="rd-title">
+      <h2><span id="rd-name"></span>
+        <span class="pill-n" id="rd-nav" hidden><button id="rd-prev" aria-label="Previous file">◀</button><span id="rd-pos"></span><button id="rd-next" aria-label="Next file">▶</button></span>
+        <span class="pill-n edited" id="rd-edited" hidden>Edited</span></h2>
+      <div class="rd-meta" id="rd-meta"></div>
+    </div>
+    <span class="sp"></span>
+    <div class="search" role="search">
+      <span aria-hidden="true">🔍</span>
+      <input id="rd-q" type="search" placeholder="Search in document" aria-label="Search in document" autocomplete="off">
+      <span class="muted" id="rd-qc"></span>
+      <button class="icon-btn" id="rd-qp" title="Previous match (Shift+Enter)" aria-label="Previous match">↑</button>
+      <button class="icon-btn" id="rd-qn" title="Next match (Enter)" aria-label="Next match">↓</button>
+    </div>
+    <button class="btn small" id="rd-revert" hidden title="Discard all edits">Revert</button>
+    <button class="btn small" id="rd-save" title="Download this Markdown (Ctrl+S)">Save .md</button>
+    <div class="create-wrap">
+      <button class="btn small primary" id="rd-create">Create documents ▾</button>
+      <div class="pop" id="rd-pop" hidden>
+        <p class="side-h">Create these formats</p>
+        <label><input type="checkbox" name="rdfmt" value="docx"> Word (.docx)</label>
+        <label><input type="checkbox" name="rdfmt" value="xlsx"> Excel (.xlsx)</label>
+        <label><input type="checkbox" name="rdfmt" value="pdf"> PDF (.pdf)</label>
+        <label><input type="checkbox" name="rdfmt" value="html"> Web page (.html)</label>
+        <button class="btn small primary" id="rd-pop-go">Create</button>
+      </div>
+    </div>
+    <button class="icon-btn" id="rd-close" aria-label="Close">✕</button>
+  </div>
+  <div class="rd-bar2">
+    <span class="lbl">View as</span>
+    <div class="seg" id="rd-views" role="tablist" aria-label="View as">
+      <button role="tab" data-view="md">Markdown</button>
+      <button role="tab" data-view="word">Word</button>
+      <button role="tab" data-view="pdf">PDF</button>
+      <button role="tab" data-view="excel">Excel</button>
+      <button role="tab" data-view="web">Web page</button>
+    </div>
+    <span class="sp"></span>
+    <label class="chk"><input type="checkbox" id="rd-split"> Side by side</label>
+    <span class="zoom"><button class="icon-btn" id="rd-fs-" title="Smaller text" aria-label="Smaller text">A−</button><button class="icon-btn" id="rd-fs+" title="Larger text" aria-label="Larger text">A+</button></span>
+    <button class="icon-btn" id="rd-theme" title="Switch light / dark" aria-label="Switch light or dark theme">☀ / ☾</button>
+  </div>
+  <div class="rd-body">
+    <aside class="rd-side" id="rd-side" aria-label="Outline"></aside>
+    <div class="rd-main" id="rd-main"></div>
+  </div>
+  <div class="checks" id="rd-checks" hidden></div>
+  <div class="rd-status"><span id="rd-status-l"></span><span class="sp"></span><span id="rd-status-note" class="muted"></span><button class="chips-btn" id="rd-status-r" title="Show or hide the checks"></button></div>
+</dialog>
+
 <!-- Review / report viewer -->
 <dialog id="viewer" class="viewer">
   <div class="viewer-head">

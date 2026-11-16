@@ -56,6 +56,34 @@ and figures), footnotes, comments and the cover page. It also asks whether to
 accept tracked changes. The choices are remembered in the browser. Every removed
 item is listed in the verification report.
 
+### Markdown reader
+
+In the Markdown → Document tab, every queued file has a **Read** button (the file
+name is also clickable). Converted Markdown from the Document → Markdown tab opens
+in the same reader through **Read the .md**.
+
+- **View as:** Markdown (editable source with line numbers and syntax colours),
+  Word, PDF, Excel and Web page.
+  - *PDF* is the real PDF that would be created, shown page by page with thumbnails.
+  - *Excel* shows the sheets of the real `.xlsx`, with merged cells and sheet tabs.
+  - *Web page* is the content of the `.html` file that would be created.
+  - *Word* is an approximate page-style rendering of the same content (Word may
+    break pages and apply fonts slightly differently).
+- **Side by side:** source on the left, the converted look on the right. Scrolling
+  is linked, and clicking a block in the preview selects it in the source.
+- **Checks before converting:** problems that would affect the result, each with
+  **Go to line**. Serious (🔴): footnote used but never defined, unclosed
+  `<table>` or code block. Notes (🟠): images (not included), skipped heading
+  levels, table rows with the wrong number of cells, links that cannot be followed,
+  unsupported HTML tags, unused footnotes.
+- **Editing:** the source can be edited. Edits update the outline, the checks and
+  the previews, are kept in the queue (the edited text is the text that is
+  converted), and can be saved as a new `.md` file or reverted.
+- **Also:** outline (headings, tables, footnotes, images), search (`Ctrl+F`),
+  text size, a light/dark switch, and arrows to move between queued files.
+- Files of several megabytes open normally: syntax colours are switched off above
+  about 400 KB, and long previews are drawn in chunks.
+
 ### Verification report
 
 The app checks each conversion against an **independent inventory** of the
@@ -165,6 +193,7 @@ with the real security policy. It writes the results to `test-output/`.
 | Path | Purpose |
 | --- | --- |
 | `src/app.js`, `src/index.html`, `src/styles.css` | User interface |
+| `src/reader.js`, `src/lib/md-checks.js`, `src/lib/model-html.js`, `src/lib/preview.js` | Markdown reader (editor, checks, Word/PDF/Excel/Web previews) |
 | `src/sw.js`, `src/manifest.webmanifest`, `src/icons/` | PWA (offline cache, install) |
 | `src/lib/docx-reader.js`, `xlsx-reader.js`, `pdf-reader.js` | Readers that build the shared document model (`ast.js`) |
 | `src/lib/md-writer.js` | Document model → Markdown |

@@ -5,9 +5,8 @@ const ALLOWED = new Set(['A', 'B', 'STRONG', 'I', 'EM', 'S', 'DEL', 'U', 'SUP', 
   'UL', 'OL', 'LI', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'CAPTION', 'SPAN', 'DIV', 'IMG', 'INPUT', 'SECTION']);
 const ATTRS = { A: ['href'], TD: ['rowspan', 'colspan', 'align'], TH: ['rowspan', 'colspan', 'align'], OL: ['start'], IMG: ['alt'], INPUT: ['type', 'checked', 'disabled'] };
 
-/** Render Markdown to HTML and remove anything that is not plain document markup. */
-export function markdownToSafeHtml(md) {
-  const raw = marked.parse(md, { gfm: true, async: false });
+/** Remove anything that is not plain document markup from an HTML fragment. */
+export function sanitizeHtml(raw) {
   const doc = new DOMParser().parseFromString(`<body>${raw}</body>`, 'text/html');
   const clean = (node) => {
     for (const child of [...node.childNodes]) {
@@ -34,6 +33,29 @@ export function markdownToSafeHtml(md) {
   };
   clean(doc.body);
   return doc.body.innerHTML;
+}
+
+/** Render Markdown to HTML and remove anything that is not plain document markup. */
+export function markdownToSafeHtml(md) {
+  return sanitizeHtml(marked.parse(md, { gfm: true, async: false }));
+}
+
+/** The same HTML, one top-level block at a time, with the source line range of each block. */
+export function markdownToBlocksHtml(md) {
+  const tokens = marked.lexer(md, { gfm: true });
+  const out = [];
+  let ln = 1;
+  for (const t of tokens) {
+    const raw = t.raw || '';
+    if (t.type !== 'space') {
+      const body = raw.replace(/\n+$/, '');
+      const list = [t];
+      list.links = tokens.links;
+      out.push({ ls: ln, le: ln + (body ? body.split('\n').length - 1 : 0), html: sanitizeHtml(marked.parser(list)) });
+    }
+    ln += (raw.match(/\n/g) || []).length;
+  }
+  return out;
 }
 
 export function standaloneHtml(md, title) {
